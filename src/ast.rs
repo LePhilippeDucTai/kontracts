@@ -263,3 +263,133 @@ pub fn anytime(cond: Condition, c: Contract) -> Contract {
 pub fn until(cond: Condition, c: Contract) -> Contract {
     Contract::Until(cond, Box::new(c))
 }
+
+// =============================================================================
+// DSL ergonomique (jalon J8a)
+//
+// Cible : écrire un call à barrière aussi naturellement qu'en notation maths,
+// p.ex. `(spot("AAPL") - 150.0).clip(0.0) * one(USD)).when(at(1.0))`.
+// L'opérateur Python `@` (→ `when`) est mappé par les bindings PyO3 (J8).
+// =============================================================================
+
+/// Codes devises usuels (ergonomie : `one(USD)`).
+pub const USD: &str = "USD";
+/// Euro.
+pub const EUR: &str = "EUR";
+/// Livre sterling.
+pub const GBP: &str = "GBP";
+/// Yen japonais.
+pub const JPY: &str = "JPY";
+
+/// Alias court de [`spot`] (proche de la notation `S("AAPL")` du README).
+pub fn s(name: impl Into<String>) -> Observable {
+    spot(name)
+}
+
+impl Observable {
+    /// Plancher : `max(self, floor)` — équivaut au `.clip(floor)` du README.
+    pub fn clip(self, floor: f64) -> Observable {
+        self.max(Observable::Const(floor))
+    }
+}
+
+// --- Arithmétique observable ⊕ scalaire -------------------------------------
+
+impl Add<f64> for Observable {
+    type Output = Observable;
+    fn add(self, rhs: f64) -> Observable {
+        self + Observable::Const(rhs)
+    }
+}
+
+impl Sub<f64> for Observable {
+    type Output = Observable;
+    fn sub(self, rhs: f64) -> Observable {
+        self - Observable::Const(rhs)
+    }
+}
+
+impl Mul<f64> for Observable {
+    type Output = Observable;
+    fn mul(self, rhs: f64) -> Observable {
+        self * Observable::Const(rhs)
+    }
+}
+
+impl Div<f64> for Observable {
+    type Output = Observable;
+    fn div(self, rhs: f64) -> Observable {
+        self / Observable::Const(rhs)
+    }
+}
+
+impl Add<Observable> for f64 {
+    type Output = Observable;
+    fn add(self, rhs: Observable) -> Observable {
+        Observable::Const(self) + rhs
+    }
+}
+
+impl Sub<Observable> for f64 {
+    type Output = Observable;
+    fn sub(self, rhs: Observable) -> Observable {
+        Observable::Const(self) - rhs
+    }
+}
+
+impl Mul<Observable> for f64 {
+    type Output = Observable;
+    fn mul(self, rhs: Observable) -> Observable {
+        Observable::Const(self) * rhs
+    }
+}
+
+// --- Mise à l'échelle d'un contrat : `observable * contract` ------------------
+
+impl Mul<Contract> for Observable {
+    type Output = Contract;
+    fn mul(self, c: Contract) -> Contract {
+        Contract::Scale(self, Box::new(c))
+    }
+}
+
+impl Mul<Contract> for f64 {
+    type Output = Contract;
+    fn mul(self, c: Contract) -> Contract {
+        Contract::Scale(Observable::Const(self), Box::new(c))
+    }
+}
+
+// --- Méthodes fluides sur les contrats --------------------------------------
+
+impl Contract {
+    /// `self` acquis à la première vérification de `cond` (Python : `c @ cond`).
+    pub fn when(self, cond: Condition) -> Contract {
+        Contract::When(cond, Box::new(self))
+    }
+
+    /// `self` détenu jusqu'à activation de `cond` (knock-out).
+    pub fn until(self, cond: Condition) -> Contract {
+        Contract::Until(cond, Box::new(self))
+    }
+
+    /// `self` exerçable dès activation de `cond` (first-touch, cf. J6).
+    pub fn anytime(self, cond: Condition) -> Contract {
+        Contract::Anytime(cond, Box::new(self))
+    }
+
+    /// Détient `self` et `other`.
+    pub fn and(self, other: Contract) -> Contract {
+        Contract::And(Box::new(self), Box::new(other))
+    }
+
+    /// Choix entre `self` et `other`.
+    pub fn or(self, other: Contract) -> Contract {
+        Contract::Or(Box::new(self), Box::new(other))
+    }
+
+    /// Inverse les flux de `self`.
+    pub fn give(self) -> Contract {
+        Contract::Give(Box::new(self))
+    }
+}

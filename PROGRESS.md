@@ -19,7 +19,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J6 | Barrières | DONE | j6-barriers | [Opus + revue] `Condition::eval(path,t)` (couche numérique) ; `until` = knock-out (flux strictement antérieurs à 1ʳᵉ activation) ; `anytime` = first-touch (optimal → J17) ; `when` étendu aux conditions prix ; activation par path via `first_activation` ; `or` → Unsupported (J17) ; KO call vs Reiner-Rubinstein+BGK < 2 % (6 tests) |
 | J7 | Greeks | DONE | j7-greeks | `greeks_gbm` bump-and-reprice avec common random numbers (graine constante → variance effondrée) ; Δ/Γ (diff. spot), Vega (diff. vol), Rho (diff. taux = drift+discount) ; `Greeks`/`BumpSizes` ; vs BS : Δ<1 %, Vega/Rho<2 %, Γ<5 % (5 tests) |
 | J7b | Surfaces Greeks | DONE | j7b-surface | `greek_surface` : grille `(spot×vol)` de prix/δ/γ/ν évaluée en parallèle (rayon) ; `GreekSurface` (Array2) + export `to_csv` et `to_pgm` (heatmap grayscale sans dépendance) ; surfaces δ/ν vs BS (<2 %/<3 %), monotonie δ (5 tests) |
-| J8a | API Python ergonomique | TODO | — | |
+| J8a | API Python ergonomique | DONE | j8a-dsl | DSL fluide Rust : arithmétique observable⊕scalaire (2 sens), `.clip(floor)`, `observable * contract`/`f64 * contract` = scale, méthodes `.when/.until/.anytime/.and/.or/.give`, alias `s()`, constantes devises USD/EUR/GBP/JPY ; `@` Python → `when` mappé en J8 ; call fluide ≡ verbeux, 10 contrats en une ligne (5 tests) |
 | J8 | Bindings PyO3 | TODO | — | |
 | J9c | Batch pricing | TODO | — | |
 | J9 | Produits validation | TODO | — | |
