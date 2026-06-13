@@ -10,7 +10,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 
 | Jalon | Titre | Statut | Tag git | Résumé décisions |
 |-------|-------|--------|---------|------------------|
-| J1 | AST | TODO | — | |
+| J1 | AST | DONE | j1-ast | Enums `Contract`/`Observable`/`Condition` purs + serde JSON ; constructeurs DSL + ops surchargés (`+ - * / neg`, `max/min`, `ge/gt/le/lt`, `!`) ; round-trip vérifié sur 10 contrats |
 | J2 | Observables | TODO | — | |
 | J3 | GBM Simulateur | TODO | — | |
 | J4 | Compilateur | TODO | — | |
