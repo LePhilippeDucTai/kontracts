@@ -12,27 +12,49 @@ zero | one(ccy) | give(c) | and(c1,c2) | or(c1,c2)
 | scale(obs,c) | when(cond,c) | anytime(cond,c) | until(cond,c)
 ```
 
-## Aperçu (cible)
+## Aperçu
 
 ```python
-from kontract import one, scale, when, until, at, S
+from kontract import S, one, at, USD, GBM
 
-call = when(at(1.0), scale((S("AAPL") - 150).clip(0), one("USD")))
-ko   = until(S("AAPL") >= 200, call)
+# Un call à barrière, construit par composition d'opérateurs :
+call = ((S("AAPL") - 100.0).clip(0.0) * one(USD)) @ at(1.0)
+ko   = call.until(S("AAPL") >= 200.0)          # up-and-out
 
-res = ko.price(model=GBM(S0=180, sigma=0.25, r=0.05),
+res = ko.price(GBM(s0=180, sigma=0.25, r=0.05, asset="AAPL"),
                n_paths=1_000_000, seed=42)
-print(res.price, res.delta, res.vega)
+print(res.price, "±", res.std_error)           # prix + erreur Monte-Carlo
+
+g = call.greeks(GBM(s0=180, sigma=0.25, r=0.05, asset="AAPL"))
+print(g.delta, g.gamma, g.vega)
 ```
 
-## État
+L'opérateur `@` mappe `when`, `*` met à l'échelle (`scale`), `+` compose (`and`),
+`-` unaire inverse les flux (`give`), et les comparaisons produisent des
+conditions de barrière/exercice.
 
-Auto-implémenté jalon par jalon par Claude Code. Voir `ROADMAP.md` et
-`PROGRESS.md`. Faire avancer d'un jalon : commande `/loop`.
+## État — Phase 1 (MVP Trader) terminée ✅
+
+Les jalons **J1–J10** sont `DONE` (voir `PROGRESS.md`) : AST sérialisable,
+observables, simulateur GBM, compilateur, pricer Monte-Carlo compositionnel,
+diagnostics MC (erreur standard, IC 95 %), barrières (`until`/`anytime`),
+Greeks (Δ/Γ/ν/ρ par bump-and-reprice CRN), surfaces de Greeks, DSL ergonomique,
+bindings PyO3, batch pricing (100 contrats en < 0,2 s), catalogue de produits
+validés contre des formules fermées, CI et wheels.
+
+Auto-implémenté jalon par jalon par Claude Code. Faire avancer d'un jalon :
+commande `/loop` (ou `./.claude/skills/jalon.sh start`).
 
 ## Build local
 
-```
+```bash
+# Cœur Rust
+cargo test                       # 80+ tests
+cargo clippy --all-targets -- -D warnings
+
+# Extension Python (dans un virtualenv)
+python -m venv .venv && source .venv/bin/activate
+pip install maturin numpy pytest
 maturin develop --features python
-pytest
+pytest python/tests
 ```
