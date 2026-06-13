@@ -1,0 +1,47 @@
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+*.diag.log
+
+# Environment/Build artifacts
+node-compile-cache/
+hsperfdata_*/
+claude-*/
+code-sign
+codesign-mcp-config.json
+environment-manager-*.lock
+mcp-config-*.json
+env-manager.out
+claude-code
+claude-command
+ruby-build.*.log
+
+# Browser artifacts
+[0-9]*.[0-9]*/
+
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
