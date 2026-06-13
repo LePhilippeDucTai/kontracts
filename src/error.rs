@@ -11,6 +11,12 @@ pub enum KontractError {
     #[error("date d'observation hors de la timeline : {0}")]
     TimeOutOfRange(f64),
 
+    #[error("pas de temps hors de la trajectoire : index {0}")]
+    StepOutOfRange(usize),
+
+    #[error("trajectoire incohérente : {0}")]
+    InconsistentPath(String),
+
     #[error("erreur de (dé)sérialisation : {0}")]
     Serde(String),
 

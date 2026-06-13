@@ -16,8 +16,8 @@ pub use error::KontractError;
 pub mod ast; // J1
 pub use ast::{Condition, Contract, Currency, Observable};
 
-// Décommenter chaque module quand son jalon démarre :
-// pub mod observable;   // J2
+pub mod observable; // J2
+pub use observable::Path;
 // pub mod simulator;    // J3
 // pub mod compiler;     // J4
 // pub mod pricer;       // J5+

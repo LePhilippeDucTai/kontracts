@@ -11,7 +11,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | Jalon | Titre | Statut | Tag git | Résumé décisions |
 |-------|-------|--------|---------|------------------|
 | J1 | AST | DONE | j1-ast | Enums `Contract`/`Observable`/`Condition` purs + serde JSON ; constructeurs DSL + ops surchargés (`+ - * / neg`, `max/min`, `ge/gt/le/lt`, `!`) ; round-trip vérifié sur 10 contrats |
-| J2 | Observables | TODO | — | |
+| J2 | Observables | DONE | j2-observable | `Path` (grille + spots par actif) + `Observable::eval(path, t)` ; logique numérique isolée hors AST ; erreurs UnknownAsset/StepOutOfRange/InconsistentPath ; 8 tests (payoffs call/put, spread, nested) |
 | J3 | GBM Simulateur | TODO | — | |
 | J4 | Compilateur | TODO | — | |
 | J5 | Pricer de base | TODO | — | |
