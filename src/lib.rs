@@ -21,6 +21,9 @@ pub use observable::Path;
 
 pub mod simulator; // J3
 pub use simulator::Gbm;
+
+pub mod compiler; // J4
+pub use compiler::{compile, Plan};
 // pub mod simulator;    // J3
 // pub mod compiler;     // J4
 // pub mod pricer;       // J5+
