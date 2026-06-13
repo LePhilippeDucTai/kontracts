@@ -18,6 +18,9 @@ pub use ast::{Condition, Contract, Currency, Observable};
 
 pub mod observable; // J2
 pub use observable::Path;
+
+pub mod simulator; // J3
+pub use simulator::Gbm;
 // pub mod simulator;    // J3
 // pub mod compiler;     // J4
 // pub mod pricer;       // J5+

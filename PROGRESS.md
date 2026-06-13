@@ -12,7 +12,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 |-------|-------|--------|---------|------------------|
 | J1 | AST | DONE | j1-ast | Enums `Contract`/`Observable`/`Condition` purs + serde JSON ; constructeurs DSL + ops surchargés (`+ - * / neg`, `max/min`, `ge/gt/le/lt`, `!`) ; round-trip vérifié sur 10 contrats |
 | J2 | Observables | DONE | j2-observable | `Path` (grille + spots par actif) + `Observable::eval(path, t)` ; logique numérique isolée hors AST ; erreurs UnknownAsset/StepOutOfRange/InconsistentPath ; 8 tests (payoffs call/put, spread, nested) |
-| J3 | GBM Simulateur | TODO | — | |
+| J3 | GBM Simulateur | DONE | j3-gbm | `Gbm::simulate` → `Array2[n_paths,n_steps]` schéma log-normal exact ; rayon par trajectoire ; RNG ChaCha8 seedé par (seed,index) → reproductible indép. de l'ordre ; `simulate_paths` → `Vec<Path>` ; moments empiriques vs théorie OK (8 tests) |
 | J4 | Compilateur | TODO | — | |
 | J5 | Pricer de base | TODO | — | |
 | J5b | MC Diagnostics | TODO | — | |

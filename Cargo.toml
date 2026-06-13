@@ -32,4 +32,5 @@ default = []
 python = ["pyo3"]
 
 [dev-dependencies]
-approx = "0.5"   # comparaisons flottantes dans les tests
+approx = "0.5"      # comparaisons flottantes dans les tests
+ndarray = "0.15"   # inspection des Array2 retournés par le simulateur
