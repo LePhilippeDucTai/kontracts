@@ -15,6 +15,18 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J8  Bindings PyO3  | TODO | — | |
 | J9  Produits       | TODO | — | |
 | J10 Release        | TODO | — | |
+| J11 Simulator trait | TODO | — | |
+| J12 Heston + Dupire | TODO | — | |
+| J13 SABR + Sauts   | TODO | — | |
+| J14 Rough Bergomi  | TODO | — | |
+| J15 Réduction var. | TODO | — | |
+| J16 Quasi-MC       | TODO | — | |
+| J17 Américaines    | TODO | — | |
+| J18 Multilevel MC  | TODO | — | |
+| J19 Crank-Nicolson 1D | TODO | — | |
+| J20 ADI 2D         | TODO | — | |
+| J21 Lecteur données | TODO | — | |
+| J22 Optimiseur calib | TODO | — | |
 
 ## Journal
 
