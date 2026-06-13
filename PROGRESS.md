@@ -17,7 +17,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J5 | Pricer de base | DONE | j5-pricer | `price_gbm` compositionnel : réduction en flux `(montant, date)` par trajectoire, `scale` échantillonné à la date du flux, actualisation déterministe `e^{-rt}`, moyenne rayon ; `McConfig`/`PriceResult` ; or/until/anytime → `Unsupported` (J6) ; call EU vs BS < 1 % (9 tests) |
 | J5b | MC Diagnostics | DONE | j5b-diagnostics | `PriceResult` enrichi : `sample_std`, `std_error = σ/√n`, IC 95 % (`ci95_low/high`), `n_paths` ; `paths_for_tolerance(tol)` = `(1.96σ/tol)²` ; IC contient le prix BS, scaling quadratique vérifié (5 tests) |
 | J6 | Barrières | DONE | j6-barriers | [Opus + revue] `Condition::eval(path,t)` (couche numérique) ; `until` = knock-out (flux strictement antérieurs à 1ʳᵉ activation) ; `anytime` = first-touch (optimal → J17) ; `when` étendu aux conditions prix ; activation par path via `first_activation` ; `or` → Unsupported (J17) ; KO call vs Reiner-Rubinstein+BGK < 2 % (6 tests) |
-| J7 | Greeks | TODO | — | |
+| J7 | Greeks | DONE | j7-greeks | `greeks_gbm` bump-and-reprice avec common random numbers (graine constante → variance effondrée) ; Δ/Γ (diff. spot), Vega (diff. vol), Rho (diff. taux = drift+discount) ; `Greeks`/`BumpSizes` ; vs BS : Δ<1 %, Vega/Rho<2 %, Γ<5 % (5 tests) |
 | J7b | Surfaces Greeks | TODO | — | |
 | J8a | API Python ergonomique | TODO | — | |
 | J8 | Bindings PyO3 | TODO | — | |
