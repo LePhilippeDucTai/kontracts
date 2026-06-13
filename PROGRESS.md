@@ -29,7 +29,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 
 | Jalon | Titre | Statut | Tag git | Résumé décisions |
 |-------|-------|--------|---------|------------------|
-| J11 | Simulator trait | TODO | — | |
+| J11 | Simulator trait | IN_PROGRESS | — | |
 | J12 | Heston + Dupire | TODO | — | |
 | J13 | SABR + Merton | TODO | — | |
 | J14 | Rough Bergomi | TODO | — | |
