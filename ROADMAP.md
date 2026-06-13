@@ -12,51 +12,69 @@ n'est pas marqué `DONE` dans `PROGRESS.md`.
 ## Convention de modèles
 
 - **Sonnet** : implémentation de code dont l'architecture est déjà fixée.
-- **Opus** : jalons de conception (compilateur, planification de calcul,
-  early-stopping) où les décisions structurelles sont coûteuses à défaire.
+- **Opus** : jalons de conception où les décisions structurelles sont coûteuses à défaire.
 - Chaque jalon Opus est suivi d'une **revue Opus** distincte avant le commit.
 
-## Jalons — Phase fondations (J1–J10)
+## Stratégie : Trader Quant MVP en 2–3 semaines
 
-| # | Titre | Contenu | Modèle | Critère de complétion |
-|---|-------|---------|--------|------------------------|
-| J1 | AST | Types `Contract`, `Observable`, `Condition` + sérialisation JSON (serde) | Sonnet | Round-trip JSON testé sur 10 contrats |
-| J2 | Observables | Évaluation d'observables sur un path donné (`Const`, `Spot`, arithmétique, `Max`) | Sonnet | Tests sur paths synthétiques |
-| J3 | Simulateur GBM | Génération de paths vectorisée (`rayon` + `ndarray`), RNG seedable | Sonnet | Moments empiriques vs théoriques (tol. 3 σ) |
-| J4 | Compilateur | AST → timeline d'événements + graphe de dépendances (assets, dates, pas fin si barrière) | **Opus** | Timeline correcte sur 5 contrats de référence |
-| J5 | Pricer de base | `zero`, `one`, `give`, `and`, `scale`, `when` — MC + discount | Sonnet | Call EU vs Black-Scholes (tol. 1%) |
-| J6 | Barrières | `until`, `anytime` avec état d'activation par path | **Opus** | KO call vs formule analytique (tol. 2%) |
-| J7 | Greeks | Delta, Vega, Rho par bump-and-reprice (common random numbers) | Sonnet | Greeks call EU vs BS analytique |
-| J8 | Bindings PyO3 | `Contract` opaque + surcharge `__add__`, `__neg__`, `>=`, etc. | Sonnet | `import kontract` + pricing depuis Python |
-| J9 | Produits | vanilla, asian, knock-out, swaption — suite de validation | Sonnet | Tous prix dans les tolérances |
-| J10 | Release | CI GitHub Actions, maturin wheels, PyPI, benchmark vs QuantLib | Sonnet | Wheel installable, bench publié |
+**Phase 1 (J1–J9c)** : Trader quant peut pricer, Greeks, scenarios sur GBM en 2–3 semaines.
+**Phase 2 (J11–J18)** : Modèles avancés + calibration (4–6 semaines).
+**Phase 3 (J19–J23)** : Risk manager features (EDP, backtesting) — optionnel.
 
-## Jalons — Phase modèles avancés (J11–J14)
+## Phase 1 : MVP Trader (semaines 1–3)
 
-| # | Titre | Contenu | Modèle | Critère de complétion |
-|---|-------|---------|--------|------------------------|
-| J11 | Simulator trait | `Simulator` trait pluggable ; refactoriser GBMSimulator ; Pricer agnostique | **Opus** | GBM J5+J6+J7 inchangés, Greeks identiques |
-| J12 | Heston + Dupire | `HestonSimulator` (2D vol stochastique) ; `DupireSimulator` (vol locale) | Sonnet | Prix Heston tol. 0.5%, Dupire grid converge |
-| J13 | SABR + Sauts | `SABRSimulator` + `MertonJumpSimulator` (compound Poisson) | Sonnet | SABR vs Hagan, Merton vs BS-corrected (6 tests) |
-| J14 | Rough Bergomi | `RoughBergomiSimulator` (fBm, Hurst H < 0.5) ; génération Cholesky ou Fourier | **Opus** | Paths bien formés, kurtosis ≠ GBM, tol. 5% |
+| # | Titre | Contenu | Modèle | Critère | Trader use |
+|---|-------|---------|--------|---------|------------|
+| J1 | AST | `Contract`, `Observable`, `Condition` + JSON | Sonnet | Round-trip sur 10 contrats | Sérialiser |
+| J2 | Observables | Éval sur path (`Spot`, arithmétique, `Max`, etc.) | Sonnet | Tests paths synthétiques | Payoffs |
+| J3 | GBM Simulateur | Paths vectorisés (`rayon`), RNG seedable | Sonnet | Moments empiriques vs théorie | Scénarios |
+| J4 | Compilateur | AST → timeline + graphe de dépendances | **Opus** | Timeline 5 contrats | Validation |
+| J5 | Pricer base | `zero`, `one`, `give`, `and`, `scale`, `when` + discount | Sonnet | Call EU vs BS (1%) | **Pricer book** |
+| J5b | MC Diagnostics | Erreur standard, CI 95%, `n_paths` nécessaire | Sonnet | Trader sait son erreur MC | **Incertitude** |
+| J6 | Barrières | `until`, `anytime` (activation par path) | **Opus** | KO call vs analytique (2%) | Knock-outs |
+| J7 | Greeks | Δ, Γ, Ν par bump-and-reprice (CRN) | Sonnet | Greeks EU call vs BS | **Hedging** |
+| J7b | Surfaces Greeks | Grilles δ(S, σ), γ(S, σ), ν(S, σ) + heatmaps | Sonnet | Surfaces vs BS analytique | **Scenarios** |
+| J8a | API Python | Surcharges ergonomiques : `(S-K).clip(0) * one(USD) @ at(T)` | Sonnet | 10 contrats en < 10 min code | **Speed dev** |
+| J8 | Bindings PyO3 | `Contract` opaque, import fluide | Sonnet | `import kontract` marche | Production |
+| J9c | Batch pricing | 100+ contrats en < 500ms (`rayon` parallèle) | Sonnet | Portfolio pricing fast | **Price book** |
+| J9 | Validation | vanilla, asian, KO, swaption (suite) | Sonnet | Tous prix tolérances | E2E |
+| J10 | Release | CI, wheels, PyPI | Sonnet | Installable | Distribution |
 
-## Jalons — Phase simulation SOTA (J15–J18)
+## Phase 2 : Modèles avancés (semaines 3–8)
 
-| # | Titre | Contenu | Modèle | Critère de complétion |
-|---|-------|---------|--------|------------------------|
-| J15 | Réduction variance | Antithétiques + variables de contrôle (BS ref) ; common RNG | Sonnet | σ² réduit ≥ 50%, prix identique |
-| J16 | Quasi-MC (Sobol) | Sobol sequences + Brownian bridge ; convergence O(1/N) vs O(1/√N) | Sonnet | 1/N observable pour N ∈ [100k, 10M] |
-| J17 | Américaines (LSM) | Longstaff-Schwartz pour exercice optimal ; backward induction | **Opus** | Put US vs CRR arbres (tol. 0.5%) |
-| J18 | Multilevel MC | Hiérarchie pas de temps ; coût O(ε^{-2}) ; tests sur Heston | **Opus** | Économies mesurables à tol. 0.1% |
+| # | Titre | Contenu | Modèle | Critère | Trader use |
+|---|-------|---------|--------|---------|------------|
+| J11 | Simulator trait | `Simulator` trait ; refactoriser `GBMSimulator` | **Opus** | GBM unchanged, J5+J6+J7 verts | Plugin system |
+| J12 | Heston + Dupire | `HestonSimulator` (2D), `DupireSimulator` (vol locale) | Sonnet | Heston tol. 0.5% | **Stoch vol** |
+| J13 | SABR + Merton | `SABRSimulator`, `MertonJumpSimulator` (Poisson) | Sonnet | 6 tests (3 SABR, 3 Merton) | Exotiques |
+| J14 | Rough Bergomi | `RoughBergomiSimulator` (fBm) | **Opus** | Paths OK, convergence 5% | SOTA (optionnel) |
+| J15 | Réduction variance | Antithétiques + contrôle ; CRN | Sonnet | σ² ÷ 2, prix identique | **Faster MC** |
+| J16 | Quasi-MC (Sobol) | Sobol + Brownian bridge, O(1/N) | Sonnet | 1/N observable | **Better convergence** |
+| J17 | Américaines (LSM) | Longstaff-Schwartz backward induction | **Opus** | US put vs CRR (0.5%) | Américaines (optionnel) |
+| J18 | Multilevel MC | Hiérarchie Δt, coût O(ε^{-2}) | **Opus** | Économies mesurables | Extreme accuracy |
 
-## Jalons — Phase EDP (J19–J20)
+## Phase 2b : Calibration rapide (semaines 5–7)
 
-| # | Titre | Contenu | Modèle | Critère de complétion |
-|---|-------|---------|--------|------------------------|
-| J19 | Crank-Nicolson 1D | EDP Black-Scholes 1D ; PSOR pour américaines ; grille [S_min, S_max] | **Opus** | Call EU vs BS (0.5%), put US vs CRR |
-| J20 | ADI 2D | Heston 2D (S, v) ou corrélation 2 actifs ; schéma ADI | **Opus** | Heston call EDP ≈ MC (tol. 1%) |
+| # | Titre | Contenu | Modèle | Critère | Trader use |
+|---|-------|---------|--------|---------|------------|
+| J21 | Lecteur données | yfinance/CSV → surface vol (Brent) | Sonnet | S&P 500 surface plausible | **Market data** |
+| J21-fast | Calibration rapide | Trust region LM (< 1 sec, pas CMA-ES) | Sonnet | Heston/Dupire/SABR < 1 sec | **Real-time calib** |
 
-## Jalons — Phase calibration (J21–J22)
+## Phase 3 : Risk Manager (optionnel, après MVP)
+
+| # | Titre | Contenu | Modèle | Critère | Risk use |
+|---|-------|---------|--------|---------|-----------|
+| J19 | Crank-Nicolson 1D | EDP BS 1D + PSOR américaines | **Opus** | Call EU vs BS (0.5%), US vs CRR | PDE pricing |
+| J20 | ADI 2D | EDP 2D Heston ou corrélation 2 assets | **Opus** | Heston EDP ≈ MC (1%) | 2D pricing |
+| J22 | Optimiseur complet | CMA-ES + trust region, contraintes | **Opus** | Round-trip < 1% params | Advanced calib |
+| J23 | Backtesting | Prix historiques vs modèle, stability | Sonnet | Validation PnL réel | Model validation |
+
+## Phase 4 : Extension future (après J22)
+
+| # | Titre | Contenu | Modèle | Critère |
+|---|-------|---------|--------|---------|
+| J24 | Taux stochastiques | Vasicek/Hull-White pour contrats taux | Opus | Swaption vs analytique |
+| J25 | FX simple | Corrélation spot/rate, multi-devise | Sonnet | Cross-currency options |
 
 | # | Titre | Contenu | Modèle | Critère de complétion |
 |---|-------|---------|--------|------------------------|

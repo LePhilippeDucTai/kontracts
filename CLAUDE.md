@@ -44,22 +44,40 @@ zero | one(ccy) | give(c) | and(c1,c2) | or(c1,c2)
 
 À chaque exécution de `/loop` :
 
-1. Lire `PROGRESS.md`, identifier le **premier jalon non `DONE`**.
+1. Lire `PROGRESS.md`, identifier le **premier jalon non `DONE`** dans l'ordre strict.
 2. Utiliser le **modèle indiqué** pour ce jalon dans `ROADMAP.md`.
 3. Implémenter UNIQUEMENT ce jalon. Ne pas anticiper les suivants.
 4. Écrire/faire passer les tests jusqu'au critère de complétion.
 5. `cargo fmt && cargo clippy && cargo test` doivent être verts.
-6. Pour un jalon **Opus** : lancer une revue Opus séparée (voir SKILL) avant commit.
-7. Commit + tag `jX-<slug>`, puis passer le jalon à `DONE` dans `PROGRESS.md`
-   avec un court résumé des décisions prises.
+6. Pour un jalon **Opus** : lancer une revue Opus séparée avant commit.
+7. Commit + tag `jX-<slug>`, mettre à jour `PROGRESS.md` (statut + résumé).
 8. S'arrêter. Une exécution de `/loop` = un jalon.
+
+## Ordre d'exécution strict (MVP Trader)
+
+**Phase 1 (J1–J10)** : linéaire et blocante. Chaque jalon dépend du précédent.
+- **J5b** bloqué par J5
+- **J7b** bloqué par J7
+- **J8a** bloqué par J7b
+- **J9c** bloqué par J8
+
+**Déviation interdite** : ne pas sauter à J11 avant J10 DONE.
+Ne pas faire J21 sans J12.
+
+## Stratégie : Trader Quant MVP en 2–3 semaines
+
+**Phase 1 (J1–J10)** : Trader quant peut pricer, Greeks, scenarios (GBM seulement).
+**Phase 2 (J11–J21-fast)** : Modèles avancés + calibration rapide.
+**Phase 3 (J19–J23)** : Risk manager features (EDP, backtesting) — optionnel.
 
 ## Décisions déjà prises (ne pas rediscuter)
 
-- Modèle de diffusion initial : GBM. Heston/SABR viendront après J10 comme
-  simulateurs branchables, sans toucher au pricer.
-- `f64` partout (pas de génériques sur le scalaire au début).
-- Discount déterministe (taux constant) jusqu'à J9 ; taux stochastique = extension.
+- **MVP Trader d'abord** : J1–J10 en 2–3 semaines, pas d'optimisations prématurées.
+- **Modèles branchables** : GBM initial, Heston/Dupire/SABR/RoughBergomi branchables via `Simulator` trait (J11).
+- **Calibration rapide** : Trust region LM (< 1 sec), pas CMA-ES standard pour traders.
+- **Greeks surfaces** : J7b expose δ(S,σ), γ(S,σ), ν(S,σ) pour scenario analysis.
+- **Batch pricing** : J9c optimisé rayon pour pricer 100+ contrats en < 500ms.
+- `f64` partout. Discount déterministe jusqu'à J24 (taux stochastiques futur).
 
 ## Ce qu'il ne faut PAS faire
 
