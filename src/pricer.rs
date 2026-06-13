@@ -48,11 +48,37 @@ impl Default for McConfig {
     }
 }
 
-/// Résultat d'un pricing.
+/// Résultat d'un pricing, enrichi des diagnostics Monte-Carlo (jalon J5b).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriceResult {
-    /// Prix (espérance actualisée des flux).
+    /// Prix (moyenne actualisée des flux sur les trajectoires).
     pub price: f64,
+    /// Écart-type empirique des valeurs actualisées par trajectoire.
+    pub sample_std: f64,
+    /// Erreur standard de l'estimateur : `sample_std / √n`.
+    pub std_error: f64,
+    /// Borne basse de l'intervalle de confiance à 95 % (`price − 1.96·SE`).
+    pub ci95_low: f64,
+    /// Borne haute de l'intervalle de confiance à 95 % (`price + 1.96·SE`).
+    pub ci95_high: f64,
+    /// Nombre de trajectoires utilisées.
+    pub n_paths: usize,
+}
+
+/// Quantile normal à 95 % (bilatéral).
+const Z95: f64 = 1.959_963_984_540_054;
+
+impl PriceResult {
+    /// Estime le nombre de trajectoires nécessaires pour atteindre une demi-largeur
+    /// d'intervalle de confiance à 95 % égale à `tol`.
+    ///
+    /// `n ≈ (1.96 · σ / tol)²`, où `σ` est l'écart-type empirique courant.
+    pub fn paths_for_tolerance(&self, tol: f64) -> usize {
+        if tol <= 0.0 || self.sample_std == 0.0 {
+            return 0;
+        }
+        (Z95 * self.sample_std / tol).powi(2).ceil() as usize
+    }
 }
 
 /// Price un contrat sous un modèle GBM mono-sous-jacent.
@@ -70,8 +96,35 @@ pub fn price_gbm(
         .map(|p| present_value(contract, p, &grid, cfg.rate))
         .collect::<Result<Vec<f64>, KontractError>>()?;
 
-    let price = pvs.iter().sum::<f64>() / pvs.len().max(1) as f64;
-    Ok(PriceResult { price })
+    Ok(summarize(&pvs))
+}
+
+/// Agrège les valeurs actualisées par trajectoire en prix + diagnostics MC.
+fn summarize(pvs: &[f64]) -> PriceResult {
+    let n = pvs.len();
+    let price = pvs.iter().sum::<f64>() / n.max(1) as f64;
+
+    // Variance d'échantillon (estimateur sans biais, n − 1).
+    let sample_std = if n > 1 {
+        let var = pvs.iter().map(|x| (x - price).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+        var.sqrt()
+    } else {
+        0.0
+    };
+    let std_error = if n > 0 {
+        sample_std / (n as f64).sqrt()
+    } else {
+        0.0
+    };
+
+    PriceResult {
+        price,
+        sample_std,
+        std_error,
+        ci95_low: price - Z95 * std_error,
+        ci95_high: price + Z95 * std_error,
+        n_paths: n,
+    }
 }
 
 /// Valeur actualisée (à `t = 0`) d'un contrat sur une trajectoire.
