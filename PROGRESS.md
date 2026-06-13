@@ -29,7 +29,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 
 | Jalon | Titre | Statut | Tag git | Résumé décisions |
 |-------|-------|--------|---------|------------------|
-| J11 | Simulator trait | IN_PROGRESS | — | |
+| J11 | Simulator trait | DONE | j11-simulator | `Simulator` trait (`simulate`, `simulate_paths`, `asset_name`) ; implémentation `Gbm` sans modification logique ; `price_gbm`/`price_batch_gbm` acceptent `&dyn Simulator` ; pricer agnostique au modèle ; 91 tests verts, régression J1–J10 vérifiée ; déverrouille J12–J14 (Heston, Dupire, SABR, Rough Bergomi) |
 | J12 | Heston + Dupire | TODO | — | |
 | J13 | SABR + Merton | TODO | — | |
 | J14 | Rough Bergomi | TODO | — | |
