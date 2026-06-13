@@ -19,7 +19,7 @@
 use rayon::prelude::*;
 
 use crate::ast::{Condition, Contract};
-use crate::compiler::compile;
+use crate::compiler::{compile, Plan};
 use crate::observable::Path;
 use crate::simulator::Gbm;
 use crate::KontractError;
@@ -90,13 +90,74 @@ pub fn price_gbm(
     let plan = compile(contract)?;
     let grid = plan.time_grid(cfg.steps_per_year);
     let paths = model.simulate_paths(&grid, cfg.n_paths, cfg.seed)?;
+    price_on_paths(contract, &paths, &grid, cfg.rate)
+}
 
+/// Évalue un contrat sur des trajectoires **déjà simulées** (parallèle par path).
+///
+/// Brique de base partagée par [`price_gbm`] et [`price_batch_gbm`] : permet de
+/// réutiliser une même simulation pour plusieurs contrats.
+pub fn price_on_paths(
+    contract: &Contract,
+    paths: &[Path],
+    grid: &[f64],
+    rate: f64,
+) -> Result<PriceResult, KontractError> {
     let pvs = paths
         .par_iter()
-        .map(|p| present_value(contract, p, &grid, cfg.rate))
+        .map(|p| present_value(contract, p, grid, rate))
         .collect::<Result<Vec<f64>, KontractError>>()?;
-
     Ok(summarize(&pvs))
+}
+
+/// Price un **portefeuille** de contrats sous un même modèle GBM.
+///
+/// Optimisation clé (jalon J9c) : on compile tous les contrats, on construit une
+/// grille temporelle **unifiée** (union des dates, fine si une barrière existe),
+/// on simule les trajectoires **une seule fois**, puis on évalue chaque contrat
+/// sur ces trajectoires partagées en parallèle (rayon). Pricer 100+ contrats ne
+/// coûte donc qu'une simulation + des évaluations vectorisées.
+pub fn price_batch_gbm(
+    contracts: &[Contract],
+    model: &Gbm,
+    cfg: &McConfig,
+) -> Result<Vec<PriceResult>, KontractError> {
+    if contracts.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Plan unifié : union des dates, horizon max, grille fine si une barrière.
+    let mut fixed_dates = Vec::new();
+    let mut horizon = 0.0_f64;
+    let mut needs_fine_grid = false;
+    for c in contracts {
+        let plan = compile(c)?;
+        fixed_dates.extend(plan.fixed_dates);
+        horizon = horizon.max(plan.horizon);
+        needs_fine_grid |= plan.needs_fine_grid;
+    }
+    let merged = Plan {
+        assets: Vec::new(),
+        fixed_dates,
+        horizon,
+        needs_fine_grid,
+    };
+    let grid = merged.time_grid(cfg.steps_per_year);
+
+    // Simulation unique, partagée par tous les contrats.
+    let paths = model.simulate_paths(&grid, cfg.n_paths, cfg.seed)?;
+
+    // Évaluation parallèle au niveau des contrats (boucle interne séquentielle).
+    contracts
+        .par_iter()
+        .map(|c| {
+            let pvs = paths
+                .iter()
+                .map(|p| present_value(c, p, &grid, cfg.rate))
+                .collect::<Result<Vec<f64>, KontractError>>()?;
+            Ok(summarize(&pvs))
+        })
+        .collect()
 }
 
 /// Agrège les valeurs actualisées par trajectoire en prix + diagnostics MC.

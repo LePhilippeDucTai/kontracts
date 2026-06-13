@@ -21,7 +21,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J7b | Surfaces Greeks | DONE | j7b-surface | `greek_surface` : grille `(spot×vol)` de prix/δ/γ/ν évaluée en parallèle (rayon) ; `GreekSurface` (Array2) + export `to_csv` et `to_pgm` (heatmap grayscale sans dépendance) ; surfaces δ/ν vs BS (<2 %/<3 %), monotonie δ (5 tests) |
 | J8a | API Python ergonomique | DONE | j8a-dsl | DSL fluide Rust : arithmétique observable⊕scalaire (2 sens), `.clip(floor)`, `observable * contract`/`f64 * contract` = scale, méthodes `.when/.until/.anytime/.and/.or/.give`, alias `s()`, constantes devises USD/EUR/GBP/JPY ; `@` Python → `when` mappé en J8 ; call fluide ≡ verbeux, 10 contrats en une ligne (5 tests) |
 | J8 | Bindings PyO3 | DONE | j8-pyo3 | Bindings PyO3 0.21 : classes `Observable`/`Condition`/`Contract`/`GBM`/`PriceResult`/`Greeks` ; opérateurs Python (`- * / @ + ~`, comparaisons → Condition) ; `Contract.price()/greeks()` ; constructeurs `S/spot/one/zero/at/const_` + devises ; build maturin (venv) OK ; 6 tests pytest (import, fluide `@`, call vs BS <1 %, greeks, KO, portefeuille) |
-| J9c | Batch pricing | TODO | — | |
+| J9c | Batch pricing | DONE | j9c-batch | `price_on_paths` (éval sur trajectoires pré-simulées) + `price_batch_gbm` : grille unifiée (union des dates, fine si barrière), **simulation unique partagée**, éval parallèle rayon par contrat ; batch ≡ pricing individuel ; **100 contrats en 0,14 s en release** (< 500 ms) ; 4 tests |
 | J9 | Produits validation | TODO | — | |
 | J10 | Release | TODO | — | |
 
