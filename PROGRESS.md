@@ -16,7 +16,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J4 | Compilateur | DONE | j4-compiler | [Opus + revue] `compile(&Contract)` → `Plan{assets, fixed_dates, horizon, needs_fine_grid}` ; barrière = condition dépendante du prix sous when/until/anytime ; `Plan::time_grid` (européen = dates seules, barrière = grille dense) ; 9 tests dont 5 contrats de référence |
 | J5 | Pricer de base | DONE | j5-pricer | `price_gbm` compositionnel : réduction en flux `(montant, date)` par trajectoire, `scale` échantillonné à la date du flux, actualisation déterministe `e^{-rt}`, moyenne rayon ; `McConfig`/`PriceResult` ; or/until/anytime → `Unsupported` (J6) ; call EU vs BS < 1 % (9 tests) |
 | J5b | MC Diagnostics | DONE | j5b-diagnostics | `PriceResult` enrichi : `sample_std`, `std_error = σ/√n`, IC 95 % (`ci95_low/high`), `n_paths` ; `paths_for_tolerance(tol)` = `(1.96σ/tol)²` ; IC contient le prix BS, scaling quadratique vérifié (5 tests) |
-| J6 | Barrières | TODO | — | |
+| J6 | Barrières | DONE | j6-barriers | [Opus + revue] `Condition::eval(path,t)` (couche numérique) ; `until` = knock-out (flux strictement antérieurs à 1ʳᵉ activation) ; `anytime` = first-touch (optimal → J17) ; `when` étendu aux conditions prix ; activation par path via `first_activation` ; `or` → Unsupported (J17) ; KO call vs Reiner-Rubinstein+BGK < 2 % (6 tests) |
 | J7 | Greeks | TODO | — | |
 | J7b | Surfaces Greeks | TODO | — | |
 | J8a | API Python ergonomique | TODO | — | |

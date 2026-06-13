@@ -128,14 +128,11 @@ fn european_call_matches_black_scholes() {
 }
 
 #[test]
-fn unsupported_combinators_error_before_j6() {
-    use kontract::ast::{or, until};
+fn or_is_unsupported_until_lsm() {
+    use kontract::ast::or;
     use kontract::KontractError;
 
+    // `or` (choix optimal) reste réservé au jalon J17 (Longstaff-Schwartz).
     let res = price_gbm(&or(one("USD"), one("USD")), &flat_model(), &det_cfg(0.0));
-    assert!(matches!(res, Err(KontractError::Unsupported(_))));
-
-    let barrier = until(spot("AAPL").ge(konst(200.0)), when(at(1.0), one("USD")));
-    let res = price_gbm(&barrier, &flat_model(), &det_cfg(0.0));
     assert!(matches!(res, Err(KontractError::Unsupported(_))));
 }

@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::Observable;
+use crate::ast::{Condition, Observable};
 use crate::KontractError;
 
 /// Une trajectoire de marché discrète, partagée par tous les sous-jacents.
@@ -92,6 +92,32 @@ impl Observable {
             Observable::Div(a, b) => Ok(a.eval(path, t)? / b.eval(path, t)?),
             Observable::Max(a, b) => Ok(a.eval(path, t)?.max(b.eval(path, t)?)),
             Observable::Min(a, b) => Ok(a.eval(path, t)?.min(b.eval(path, t)?)),
+        }
+    }
+}
+
+impl Condition {
+    /// Évalue la condition sur `path` au pas de temps `t` (jalon J6).
+    ///
+    /// `At(t0)` est vraie dès que la date courante atteint `t0` ; les
+    /// comparaisons s'appuient sur l'évaluation des observables.
+    pub fn eval(&self, path: &Path, t: usize) -> Result<bool, KontractError> {
+        match self {
+            Condition::Bool(b) => Ok(*b),
+            Condition::At(t0) => {
+                let now = *path
+                    .times()
+                    .get(t)
+                    .ok_or(KontractError::StepOutOfRange(t))?;
+                Ok(now + 1e-12 >= *t0)
+            }
+            Condition::Ge(a, b) => Ok(a.eval(path, t)? >= b.eval(path, t)?),
+            Condition::Gt(a, b) => Ok(a.eval(path, t)? > b.eval(path, t)?),
+            Condition::Le(a, b) => Ok(a.eval(path, t)? <= b.eval(path, t)?),
+            Condition::Lt(a, b) => Ok(a.eval(path, t)? < b.eval(path, t)?),
+            Condition::And(a, b) => Ok(a.eval(path, t)? && b.eval(path, t)?),
+            Condition::Or(a, b) => Ok(a.eval(path, t)? || b.eval(path, t)?),
+            Condition::Not(a) => Ok(!a.eval(path, t)?),
         }
     }
 }

@@ -134,7 +134,7 @@ fn present_value(
     grid: &[f64],
     rate: f64,
 ) -> Result<f64, KontractError> {
-    let flows = cashflows(contract, 0, path, grid)?;
+    let flows = cashflows(contract, 0, path)?;
     Ok(flows
         .into_iter()
         .map(|(amount, t_idx)| amount * (-rate * grid[t_idx]).exp())
@@ -144,67 +144,72 @@ fn present_value(
 /// Réduit un contrat en flux `(montant, index_de_date)` le long d'une trajectoire.
 ///
 /// `t_idx` est l'index de la **date d'acquisition courante** du sous-contrat.
+/// Les dates sont des index dans la grille de `path` ; l'actualisation est
+/// appliquée par [`present_value`].
 fn cashflows(
     contract: &Contract,
     t_idx: usize,
     path: &Path,
-    grid: &[f64],
 ) -> Result<Vec<(f64, usize)>, KontractError> {
     match contract {
         Contract::Zero => Ok(vec![]),
         Contract::One(_) => Ok(vec![(1.0, t_idx)]),
         Contract::Give(c) => {
-            let mut flows = cashflows(c, t_idx, path, grid)?;
+            let mut flows = cashflows(c, t_idx, path)?;
             for f in &mut flows {
                 f.0 = -f.0;
             }
             Ok(flows)
         }
         Contract::And(a, b) => {
-            let mut flows = cashflows(a, t_idx, path, grid)?;
-            flows.extend(cashflows(b, t_idx, path, grid)?);
+            let mut flows = cashflows(a, t_idx, path)?;
+            flows.extend(cashflows(b, t_idx, path)?);
             Ok(flows)
         }
         Contract::Scale(obs, c) => {
-            let mut flows = cashflows(c, t_idx, path, grid)?;
+            let mut flows = cashflows(c, t_idx, path)?;
             for f in &mut flows {
                 // L'observable est échantillonné à la date du flux qu'il met à l'échelle.
                 f.0 *= obs.eval(path, f.1)?;
             }
             Ok(flows)
         }
-        Contract::When(cond, c) => match resolve_when(cond, t_idx, grid)? {
-            Some(k) => cashflows(c, k, path, grid),
+        // `when` : acquiert `c` à la **première** activation de la condition
+        // (date `at`, ou premier franchissement de barrière), à partir de `t_idx`.
+        Contract::When(cond, c) => match first_activation(cond, path, t_idx)? {
+            Some(k) => cashflows(c, k, path),
             None => Ok(vec![]),
         },
-        Contract::Or(_, _) => Err(KontractError::Unsupported("or (jalon J6)".into())),
-        Contract::Anytime(_, _) => Err(KontractError::Unsupported("anytime (jalon J6)".into())),
-        Contract::Until(_, _) => Err(KontractError::Unsupported("until (jalon J6)".into())),
+        // `anytime` : style américain, approximé en **premier franchissement**
+        // (first-touch). L'exercice réellement optimal relève du jalon J17 (LSM).
+        Contract::Anytime(cond, c) => match first_activation(cond, path, t_idx)? {
+            Some(k) => cashflows(c, k, path),
+            None => Ok(vec![]),
+        },
+        // `until` : knock-out. On garde les flux de `c` **strictement antérieurs**
+        // à la première activation de la condition ; les autres sont annulés.
+        Contract::Until(cond, c) => {
+            let flows = cashflows(c, t_idx, path)?;
+            match first_activation(cond, path, t_idx)? {
+                Some(k) => Ok(flows.into_iter().filter(|(_, ti)| *ti < k).collect()),
+                None => Ok(flows),
+            }
+        }
+        // `or` : choix optimal du détenteur → arbitrage d'exercice (jalon J17, LSM).
+        Contract::Or(_, _) => Err(KontractError::Unsupported("or (jalon J17, LSM)".into())),
     }
 }
 
-/// Détermine l'index de date d'acquisition d'un `when`.
-///
-/// J5 ne gère que les conditions temporelles (`at`) et booléennes constantes ;
-/// les conditions dépendantes du prix relèvent du jalon J6.
-fn resolve_when(
+/// Premier pas de temps `>= start` où la condition est vraie sur cette trajectoire.
+fn first_activation(
     cond: &Condition,
-    t_idx: usize,
-    grid: &[f64],
+    path: &Path,
+    start: usize,
 ) -> Result<Option<usize>, KontractError> {
-    match cond {
-        Condition::Bool(true) => Ok(Some(t_idx)),
-        Condition::Bool(false) => Ok(None),
-        Condition::At(t) => Ok(Some(index_of(*t, grid)?)),
-        _ => Err(KontractError::Unsupported(
-            "condition dépendante du prix (jalon J6)".into(),
-        )),
+    for t in start..path.len() {
+        if cond.eval(path, t)? {
+            return Ok(Some(t));
+        }
     }
-}
-
-/// Retrouve l'index d'une date dans la grille (tolérance 1e-9).
-fn index_of(t: f64, grid: &[f64]) -> Result<usize, KontractError> {
-    grid.iter()
-        .position(|&g| (g - t).abs() < 1e-9)
-        .ok_or(KontractError::TimeOutOfRange(t))
+    Ok(None)
 }
