@@ -14,7 +14,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J2 | Observables | DONE | j2-observable | `Path` (grille + spots par actif) + `Observable::eval(path, t)` ; logique numérique isolée hors AST ; erreurs UnknownAsset/StepOutOfRange/InconsistentPath ; 8 tests (payoffs call/put, spread, nested) |
 | J3 | GBM Simulateur | DONE | j3-gbm | `Gbm::simulate` → `Array2[n_paths,n_steps]` schéma log-normal exact ; rayon par trajectoire ; RNG ChaCha8 seedé par (seed,index) → reproductible indép. de l'ordre ; `simulate_paths` → `Vec<Path>` ; moments empiriques vs théorie OK (8 tests) |
 | J4 | Compilateur | DONE | j4-compiler | [Opus + revue] `compile(&Contract)` → `Plan{assets, fixed_dates, horizon, needs_fine_grid}` ; barrière = condition dépendante du prix sous when/until/anytime ; `Plan::time_grid` (européen = dates seules, barrière = grille dense) ; 9 tests dont 5 contrats de référence |
-| J5 | Pricer de base | TODO | — | |
+| J5 | Pricer de base | DONE | j5-pricer | `price_gbm` compositionnel : réduction en flux `(montant, date)` par trajectoire, `scale` échantillonné à la date du flux, actualisation déterministe `e^{-rt}`, moyenne rayon ; `McConfig`/`PriceResult` ; or/until/anytime → `Unsupported` (J6) ; call EU vs BS < 1 % (9 tests) |
 | J5b | MC Diagnostics | TODO | — | |
 | J6 | Barrières | TODO | — | |
 | J7 | Greeks | TODO | — | |

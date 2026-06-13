@@ -1,0 +1,157 @@
+//! Pricer Monte-Carlo compositionnel (jalon J5).
+//!
+//! Le pricer ne connaît **aucun** produit nommé : il réduit récursivement un
+//! [`Contract`] en une liste de flux `(montant, date)` le long de chaque
+//! trajectoire, actualise, puis moyenne sur les trajectoires.
+//!
+//! Sémantique des combinateurs (sous-ensemble du jalon J5) :
+//!   - `zero`        → aucun flux ;
+//!   - `one(ccy)`    → un flux unitaire à la date d'acquisition courante ;
+//!   - `give(c)`     → flux de `c` négativés ;
+//!   - `and(a, b)`   → union des flux ;
+//!   - `scale(o, c)` → chaque flux de `c` multiplié par `o` **évalué à la date
+//!     de ce flux** (sémantique indépendante de l'imbrication) ;
+//!   - `when(at(t), c)` → `c` acquis à la date `t`.
+//!
+//! Les barrières (`until`, `anytime`) et le choix (`or`) arrivent au jalon J6 :
+//! ici ils renvoient [`KontractError::Unsupported`].
+
+use rayon::prelude::*;
+
+use crate::ast::{Condition, Contract};
+use crate::compiler::compile;
+use crate::observable::Path;
+use crate::simulator::Gbm;
+use crate::KontractError;
+
+/// Paramètres de la simulation Monte-Carlo.
+#[derive(Debug, Clone)]
+pub struct McConfig {
+    /// Nombre de trajectoires.
+    pub n_paths: usize,
+    /// Graine du RNG (reproductibilité).
+    pub seed: u64,
+    /// Résolution de la grille en présence de barrière (pas par an).
+    pub steps_per_year: usize,
+    /// Taux d'actualisation déterministe `r` (sert aussi de drift risque-neutre).
+    pub rate: f64,
+}
+
+impl Default for McConfig {
+    fn default() -> Self {
+        McConfig {
+            n_paths: 100_000,
+            seed: 42,
+            steps_per_year: 50,
+            rate: 0.0,
+        }
+    }
+}
+
+/// Résultat d'un pricing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriceResult {
+    /// Prix (espérance actualisée des flux).
+    pub price: f64,
+}
+
+/// Price un contrat sous un modèle GBM mono-sous-jacent.
+pub fn price_gbm(
+    contract: &Contract,
+    model: &Gbm,
+    cfg: &McConfig,
+) -> Result<PriceResult, KontractError> {
+    let plan = compile(contract)?;
+    let grid = plan.time_grid(cfg.steps_per_year);
+    let paths = model.simulate_paths(&grid, cfg.n_paths, cfg.seed)?;
+
+    let pvs = paths
+        .par_iter()
+        .map(|p| present_value(contract, p, &grid, cfg.rate))
+        .collect::<Result<Vec<f64>, KontractError>>()?;
+
+    let price = pvs.iter().sum::<f64>() / pvs.len().max(1) as f64;
+    Ok(PriceResult { price })
+}
+
+/// Valeur actualisée (à `t = 0`) d'un contrat sur une trajectoire.
+fn present_value(
+    contract: &Contract,
+    path: &Path,
+    grid: &[f64],
+    rate: f64,
+) -> Result<f64, KontractError> {
+    let flows = cashflows(contract, 0, path, grid)?;
+    Ok(flows
+        .into_iter()
+        .map(|(amount, t_idx)| amount * (-rate * grid[t_idx]).exp())
+        .sum())
+}
+
+/// Réduit un contrat en flux `(montant, index_de_date)` le long d'une trajectoire.
+///
+/// `t_idx` est l'index de la **date d'acquisition courante** du sous-contrat.
+fn cashflows(
+    contract: &Contract,
+    t_idx: usize,
+    path: &Path,
+    grid: &[f64],
+) -> Result<Vec<(f64, usize)>, KontractError> {
+    match contract {
+        Contract::Zero => Ok(vec![]),
+        Contract::One(_) => Ok(vec![(1.0, t_idx)]),
+        Contract::Give(c) => {
+            let mut flows = cashflows(c, t_idx, path, grid)?;
+            for f in &mut flows {
+                f.0 = -f.0;
+            }
+            Ok(flows)
+        }
+        Contract::And(a, b) => {
+            let mut flows = cashflows(a, t_idx, path, grid)?;
+            flows.extend(cashflows(b, t_idx, path, grid)?);
+            Ok(flows)
+        }
+        Contract::Scale(obs, c) => {
+            let mut flows = cashflows(c, t_idx, path, grid)?;
+            for f in &mut flows {
+                // L'observable est échantillonné à la date du flux qu'il met à l'échelle.
+                f.0 *= obs.eval(path, f.1)?;
+            }
+            Ok(flows)
+        }
+        Contract::When(cond, c) => match resolve_when(cond, t_idx, grid)? {
+            Some(k) => cashflows(c, k, path, grid),
+            None => Ok(vec![]),
+        },
+        Contract::Or(_, _) => Err(KontractError::Unsupported("or (jalon J6)".into())),
+        Contract::Anytime(_, _) => Err(KontractError::Unsupported("anytime (jalon J6)".into())),
+        Contract::Until(_, _) => Err(KontractError::Unsupported("until (jalon J6)".into())),
+    }
+}
+
+/// Détermine l'index de date d'acquisition d'un `when`.
+///
+/// J5 ne gère que les conditions temporelles (`at`) et booléennes constantes ;
+/// les conditions dépendantes du prix relèvent du jalon J6.
+fn resolve_when(
+    cond: &Condition,
+    t_idx: usize,
+    grid: &[f64],
+) -> Result<Option<usize>, KontractError> {
+    match cond {
+        Condition::Bool(true) => Ok(Some(t_idx)),
+        Condition::Bool(false) => Ok(None),
+        Condition::At(t) => Ok(Some(index_of(*t, grid)?)),
+        _ => Err(KontractError::Unsupported(
+            "condition dépendante du prix (jalon J6)".into(),
+        )),
+    }
+}
+
+/// Retrouve l'index d'une date dans la grille (tolérance 1e-9).
+fn index_of(t: f64, grid: &[f64]) -> Result<usize, KontractError> {
+    grid.iter()
+        .position(|&g| (g - t).abs() < 1e-9)
+        .ok_or(KontractError::TimeOutOfRange(t))
+}

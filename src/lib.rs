@@ -24,6 +24,9 @@ pub use simulator::Gbm;
 
 pub mod compiler; // J4
 pub use compiler::{compile, Plan};
+
+pub mod pricer; // J5
+pub use pricer::{price_gbm, McConfig, PriceResult};
 // pub mod simulator;    // J3
 // pub mod compiler;     // J4
 // pub mod pricer;       // J5+

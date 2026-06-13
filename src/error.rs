@@ -22,4 +22,7 @@ pub enum KontractError {
 
     #[error("contrat mal formé : {0}")]
     MalformedContract(String),
+
+    #[error("primitive non encore supportée par ce moteur : {0}")]
+    Unsupported(String),
 }
