@@ -13,6 +13,7 @@ claude-*/
 code-sign
 codesign-mcp-config.json
 environment-manager-*.lock
+environment-manager.out
 mcp-config-*.json
 env-manager.out
 claude-code
