@@ -33,9 +33,8 @@ pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
 pub mod surface; // J7b
 pub use surface::{greek_surface, GreekSurface};
-// pub mod simulator;    // J3
-// pub mod compiler;     // J4
-// pub mod pricer;       // J5+
+
+pub mod products; // J9 (catalogue d'expressions DSL)
 
 #[cfg(feature = "python")]
 mod bindings; // J8

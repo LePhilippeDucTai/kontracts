@@ -22,7 +22,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J8a | API Python ergonomique | DONE | j8a-dsl | DSL fluide Rust : arithmétique observable⊕scalaire (2 sens), `.clip(floor)`, `observable * contract`/`f64 * contract` = scale, méthodes `.when/.until/.anytime/.and/.or/.give`, alias `s()`, constantes devises USD/EUR/GBP/JPY ; `@` Python → `when` mappé en J8 ; call fluide ≡ verbeux, 10 contrats en une ligne (5 tests) |
 | J8 | Bindings PyO3 | DONE | j8-pyo3 | Bindings PyO3 0.21 : classes `Observable`/`Condition`/`Contract`/`GBM`/`PriceResult`/`Greeks` ; opérateurs Python (`- * / @ + ~`, comparaisons → Condition) ; `Contract.price()/greeks()` ; constructeurs `S/spot/one/zero/at/const_` + devises ; build maturin (venv) OK ; 6 tests pytest (import, fluide `@`, call vs BS <1 %, greeks, KO, portefeuille) |
 | J9c | Batch pricing | DONE | j9c-batch | `price_on_paths` (éval sur trajectoires pré-simulées) + `price_batch_gbm` : grille unifiée (union des dates, fine si barrière), **simulation unique partagée**, éval parallèle rayon par contrat ; batch ≡ pricing individuel ; **100 contrats en 0,14 s en release** (< 500 ms) ; 4 tests |
-| J9 | Produits validation | TODO | — | |
+| J9 | Produits validation | DONE | j9-products | Module `products` (catalogue d'expressions DSL, moteur agnostique) : ZC, call/put EU, forward, straddle, bull spread, digital cash-or-nothing, up/down-and-out ; tous validés vs formules fermées (9 tests). **Asian reporté** (pas d'observable d'agrégation temporelle), **swaption reportée** (taux stochastiques → J24) |
 | J10 | Release | TODO | — | |
 
 ## Phase 2 : Modèles avancés (semaines 4–8)
