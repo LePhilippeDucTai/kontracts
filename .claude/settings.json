@@ -1,0 +1,25 @@
+{
+  "skills": {
+    "jalon": {
+      "description": "Orchestration des jalons kontract — affiche l'état, démarre, reprend et clôture les jalons de PROGRESS.md. Usage: /jalon [status|start|resume|done|stop]",
+      "command": ".claude/skills/jalon.sh",
+      "userInvocable": true
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(.claude/skills/jalon.sh*)",
+      "Bash(cargo fmt*)",
+      "Bash(cargo clippy*)",
+      "Bash(cargo test*)",
+      "Bash(cargo build*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git tag*)",
+      "Bash(git log*)"
+    ]
+  }
+}
