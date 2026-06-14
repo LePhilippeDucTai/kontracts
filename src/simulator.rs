@@ -637,6 +637,348 @@ pub fn dupire_from_gbm_calls(
 }
 
 // ============================================================================
+// SABR (J13) — modèle CEV stochastique (smile, marché de taux)
+// ============================================================================
+
+/// Simulateur SABR (Stochastic Alpha Beta Rho).
+///
+/// Dynamiques risque-neutres pour le forward log-spot `f = ln S` :
+///
+/// ```text
+/// df   = α · f^β · dW_f
+/// dα   = ν · α · dW_α
+/// dW_f · dW_α = ρ · dt
+/// ```
+///
+/// où :
+/// - `α` est la volatilité initiale (≈ `σ₀`),
+/// - `β ∈ (0, 1]` est l'exposant CEV (β=1 → GBM-like),
+/// - `ν` est la volatilité de volatilité,
+/// - `ρ ∈ [-1, 1]` est la corrélation forward/vol.
+///
+/// Le drift risque-neutre `r` est ajouté lors de la récupération du spot :
+/// `S_{t+dt} = exp(f_{t+dt}) · exp(-r · dt)` n'est **pas** la bonne façon
+/// de faire — on intègre plutôt `d(ln S) = r·dt + α·S^(β-1)·dW_f` ce qui
+/// revient à ajouter `r·dt` au log-forward à chaque pas.
+#[derive(Debug, Clone)]
+pub struct SABRSimulator {
+    /// Nom du sous-jacent (doit matcher les `Spot(name)` du contrat).
+    pub asset: String,
+    /// Prix spot initial `S_0`.
+    pub s0: f64,
+    /// Volatilité initiale `α` (= `σ₀`).
+    pub alpha: f64,
+    /// Exposant CEV `β ∈ (0, 1]` (β=1 → GBM).
+    pub beta: f64,
+    /// Vol-de-vol `ν`.
+    pub nu: f64,
+    /// Corrélation spot/vol `ρ ∈ [-1, 1]`.
+    pub rho: f64,
+    /// Taux risque-neutre `r` (drift + discount).
+    pub r: f64,
+}
+
+impl SABRSimulator {
+    /// Construit un `SABRSimulator`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        asset: impl Into<String>,
+        s0: f64,
+        alpha: f64,
+        beta: f64,
+        nu: f64,
+        rho: f64,
+        r: f64,
+    ) -> Self {
+        SABRSimulator {
+            asset: asset.into(),
+            s0,
+            alpha,
+            beta,
+            nu,
+            rho,
+            r,
+        }
+    }
+
+    /// Simule une trajectoire SABR par schéma d'Euler.
+    ///
+    /// Deux browniens corrélés par décomposition de Cholesky :
+    /// ```text
+    /// dW_f = Z1 · √dt
+    /// dW_α = (ρ·Z1 + √(1−ρ²)·Z2) · √dt
+    /// ```
+    fn simulate_one_path(&self, times: &[f64], rng: &mut ChaCha8Rng) -> Vec<f64> {
+        let n_steps = times.len();
+        let mut row = vec![0.0f64; n_steps];
+
+        let rho_perp = (1.0 - self.rho * self.rho).max(0.0).sqrt();
+
+        // Travailler en log-spot pour éviter les spots négatifs
+        let mut ln_s = self.s0.ln();
+        let mut alpha = self.alpha.max(1e-10);
+        let mut prev_t = 0.0_f64;
+
+        // Stocker S_0 à t=0 (même convention que GBM : row[0] = s0 si times[0]=0)
+        if !times.is_empty() {
+            row[0] = self.s0;
+        }
+
+        for (k, &t) in times.iter().enumerate() {
+            let dt = t - prev_t;
+            if dt > 0.0 {
+                let sqrt_dt = dt.sqrt();
+                let z1: f64 = rng.sample(StandardNormal);
+                let z2: f64 = rng.sample(StandardNormal);
+
+                let dw_f = z1 * sqrt_dt;
+                let dw_alpha = (self.rho * z1 + rho_perp * z2) * sqrt_dt;
+
+                // S courant (avant évolution) = exp(ln_s)
+                let s_cur = ln_s.exp();
+
+                // Évolution du log-spot :
+                // d(ln S) = r·dt - ½·α²·S^(2β-2)·dt + α·S^(β-1)·dW_f
+                // En Euler : ln_s += r·dt + α·s_cur^(β-1)·dW_f - ½·(α·s_cur^(β-1))²·dt
+                let sigma_eff = alpha * s_cur.powf(self.beta - 1.0);
+                ln_s += self.r * dt - 0.5 * sigma_eff * sigma_eff * dt + sigma_eff * dw_f;
+
+                // Évolution de la vol SABR : dα = ν·α·dW_α (log-normal)
+                // Utiliser le schéma exact pour α (log-normal) : αexp
+                alpha *= (self.nu * dw_alpha - 0.5 * self.nu * self.nu * dt).exp();
+                alpha = alpha.max(1e-10); // plancher pour stabilité numérique
+            }
+            row[k] = ln_s.exp();
+            prev_t = t;
+        }
+        row
+    }
+}
+
+impl Simulator for SABRSimulator {
+    fn simulate(
+        &self,
+        times: &[f64],
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Array2<f64>, KontractError> {
+        validate_grid(times)?;
+        let n_steps = times.len();
+
+        let mut data = vec![0.0f64; n_paths * n_steps];
+        data.par_chunks_mut(n_steps.max(1))
+            .enumerate()
+            .for_each(|(i, row)| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
+                let path = self.simulate_one_path(times, &mut rng);
+                row.copy_from_slice(&path);
+            });
+
+        Array2::from_shape_vec((n_paths, n_steps), data)
+            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+    }
+
+    fn asset_name(&self) -> &str {
+        &self.asset
+    }
+}
+
+/// Constructeur fonctionnel pratique pour [`SABRSimulator`].
+#[allow(clippy::too_many_arguments)]
+pub fn sabr_from_params(
+    asset: &str,
+    s0: f64,
+    alpha: f64,
+    beta: f64,
+    nu: f64,
+    rho: f64,
+    r: f64,
+) -> SABRSimulator {
+    SABRSimulator::new(asset, s0, alpha, beta, nu, rho, r)
+}
+
+// ============================================================================
+// Merton Jump-Diffusion (J13) — GBM + sauts de Poisson composés
+// ============================================================================
+
+/// Simulateur de Merton à sauts.
+///
+/// Dynamiques risque-neutres :
+///
+/// ```text
+/// dS/S = (r − λ·κ) · dt + σ · dW + J · dN(λ)
+/// ```
+///
+/// où :
+/// - `λ` = intensité des sauts (sauts/an),
+/// - `J` = multiplicateur de saut (log-normal : `ln J ~ N(μ_j − σ_j²/2, σ_j²)`),
+/// - `κ = E[J] − 1 = exp(μ_j) − 1` (ajustement risque-neutre),
+/// - `σ_j` = volatilité de saut.
+///
+/// La simulation utilise un schéma log-Euler avec distribution de Poisson pour
+/// le nombre de sauts à chaque pas, et des sauts log-normaux composés.
+#[derive(Debug, Clone)]
+pub struct MertonJumpSimulator {
+    /// Nom du sous-jacent.
+    pub asset: String,
+    /// Prix spot initial `S_0`.
+    pub s0: f64,
+    /// Taux risque-neutre `r`.
+    pub r: f64,
+    /// Volatilité de diffusion `σ`.
+    pub sigma: f64,
+    /// Intensité de Poisson `λ` (sauts/an).
+    pub lambda: f64,
+    /// Rendement moyen de saut `μ_j` (log de la moyenne du multiplicateur).
+    pub mu_j: f64,
+    /// Volatilité de saut `σ_j`.
+    pub sigma_j: f64,
+}
+
+impl MertonJumpSimulator {
+    /// Construit un `MertonJumpSimulator`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        asset: impl Into<String>,
+        s0: f64,
+        r: f64,
+        sigma: f64,
+        lambda: f64,
+        mu_j: f64,
+        sigma_j: f64,
+    ) -> Self {
+        MertonJumpSimulator {
+            asset: asset.into(),
+            s0,
+            r,
+            sigma,
+            lambda,
+            mu_j,
+            sigma_j,
+        }
+    }
+
+    /// `E[J] − 1` : ajustement risque-neutre pour les sauts (κ dans la littérature).
+    ///
+    /// Pour `ln J ~ N(μ_j − σ_j²/2, σ_j²)`, `E[J] = exp(μ_j)`.
+    fn kappa(&self) -> f64 {
+        self.mu_j.exp() - 1.0
+    }
+
+    /// Simule une trajectoire Merton (Euler log-normal + Poisson).
+    ///
+    /// À chaque pas :
+    /// 1. Tire `N ~ Poisson(λ·dt)` (nombre de sauts).
+    /// 2. Si N > 0, tire N sauts log-normaux et les multiplie.
+    /// 3. Applique le schéma Euler ajusté par `−λ·κ·dt`.
+    fn simulate_one_path(&self, times: &[f64], rng: &mut ChaCha8Rng) -> Vec<f64> {
+        let n_steps = times.len();
+        let mut row = vec![0.0f64; n_steps];
+
+        let kappa = self.kappa();
+        let mut ln_s = self.s0.ln();
+        let mut prev_t = 0.0_f64;
+
+        // Paramètre log-normal des sauts : ln J ~ N(mu_ln, sigma_j²)
+        // E[J] = exp(mu_ln + sigma_j²/2) = exp(mu_j) → mu_ln = mu_j - sigma_j²/2
+        let mu_ln = self.mu_j - 0.5 * self.sigma_j * self.sigma_j;
+
+        for (k, &t) in times.iter().enumerate() {
+            let dt = t - prev_t;
+            if dt > 0.0 {
+                let sqrt_dt = dt.sqrt();
+
+                // Diffusion GBM
+                let z: f64 = rng.sample(StandardNormal);
+                let drift_adj = self.r - self.lambda * kappa - 0.5 * self.sigma * self.sigma;
+                ln_s += drift_adj * dt + self.sigma * sqrt_dt * z;
+
+                // Sauts de Poisson composés
+                // Nombre de sauts : simulation par inversion de la CDF de Poisson
+                let n_jumps = poisson_sample(self.lambda * dt, rng);
+                for _ in 0..n_jumps {
+                    let zj: f64 = rng.sample(StandardNormal);
+                    // ln J_i ~ N(mu_ln, sigma_j²)
+                    ln_s += mu_ln + self.sigma_j * zj;
+                }
+            }
+            row[k] = ln_s.exp();
+            prev_t = t;
+        }
+        row
+    }
+}
+
+impl Simulator for MertonJumpSimulator {
+    fn simulate(
+        &self,
+        times: &[f64],
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Array2<f64>, KontractError> {
+        validate_grid(times)?;
+        let n_steps = times.len();
+
+        let mut data = vec![0.0f64; n_paths * n_steps];
+        data.par_chunks_mut(n_steps.max(1))
+            .enumerate()
+            .for_each(|(i, row)| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
+                let path = self.simulate_one_path(times, &mut rng);
+                row.copy_from_slice(&path);
+            });
+
+        Array2::from_shape_vec((n_paths, n_steps), data)
+            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+    }
+
+    fn asset_name(&self) -> &str {
+        &self.asset
+    }
+}
+
+/// Construit un `MertonJumpSimulator` (alias fonctionnel).
+#[allow(clippy::too_many_arguments)]
+pub fn merton_from_params(
+    asset: &str,
+    s0: f64,
+    r: f64,
+    sigma: f64,
+    lambda: f64,
+    mu_j: f64,
+    sigma_j: f64,
+) -> MertonJumpSimulator {
+    MertonJumpSimulator::new(asset, s0, r, sigma, lambda, mu_j, sigma_j)
+}
+
+/// Tire un entier selon la loi de Poisson de paramètre `lambda` par inversion CDF.
+///
+/// Pour `lambda ≤ 30` (courant en MC financier avec `λ·dt ≤ 5·dt`), cette méthode
+/// est exacte et rapide. Pour les grandes intensités, elle reste correcte mais moins
+/// efficace — mais SABR/Merton n'utilisent jamais λ·dt > 5 en pratique.
+fn poisson_sample(lambda: f64, rng: &mut ChaCha8Rng) -> u32 {
+    if lambda <= 0.0 {
+        return 0;
+    }
+    // Algorithme de Knuth (inversion exponentielle)
+    let l = (-lambda).exp();
+    let mut k = 0u32;
+    let mut p = 1.0_f64;
+    loop {
+        k += 1;
+        let u: f64 = rng.gen();
+        p *= u;
+        if p <= l {
+            return k - 1;
+        }
+        // Garde-fou pour éviter les boucles infinies si lambda très grand
+        if k > 1000 {
+            return k;
+        }
+    }
+}
+
+// ============================================================================
 // Utilitaires communs aux simulateurs J12
 // ============================================================================
 

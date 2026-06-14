@@ -19,9 +19,10 @@ pub use ast::{Condition, Contract, Currency, Observable};
 pub mod observable; // J2
 pub use observable::Path;
 
-pub mod simulator; // J3, J12
+pub mod simulator; // J3, J12, J13
 pub use simulator::{
-    dupire_from_gbm_calls, heston_from_params, DupireSimulator, Gbm, HestonSimulator, Simulator,
+    dupire_from_gbm_calls, heston_from_params, merton_from_params, sabr_from_params,
+    DupireSimulator, Gbm, HestonSimulator, MertonJumpSimulator, SABRSimulator, Simulator,
 };
 
 pub mod compiler; // J4
