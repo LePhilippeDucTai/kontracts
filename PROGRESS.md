@@ -31,7 +31,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 |-------|-------|--------|---------|------------------|
 | J11 | Simulator trait | DONE | j11-simulator | `Simulator` trait (`simulate`, `simulate_paths`, `asset_name`) ; implémentation `Gbm` sans modification logique ; `price_gbm`/`price_batch_gbm` acceptent `&dyn Simulator` ; pricer agnostique au modèle ; 91 tests verts, régression J1–J10 vérifiée ; déverrouille J12–J14 (Heston, Dupire, SABR, Rough Bergomi) |
 | J12 | Heston + Dupire | DONE | j12-heston-dupire | `HestonSimulator` (Euler-Milstein 2D, corrélation ρ, plancher v≥0) + `DupireSimulator` (vol locale bilinéaire, formule Dupire complète avec terme rK∂C/∂K) ; `dupire_from_gbm_calls` extraction depuis grille (K,T) ; bug `row[k]=s` avant/après évolution corrigé (affectait Heston et Dupire) ; 8 tests : GBM limit σ_v=0 (<1%), GBM limit κ=100 (<1.5%), stats log-returns, ρ impact OTM, round-trip Dupire (<3%), ATM Dupire (<3%), dyn Simulator, reproductibilité ; 89+8=97 tests verts |
-| J13 | SABR + Merton | TODO | — | |
+| J13 | SABR + Merton | IN_PROGRESS | — | |
 | J14 | Rough Bergomi | TODO | — | |
 | J15 | Réduction variance | TODO | — | |
 | J16 | Quasi-MC | TODO | — | |
