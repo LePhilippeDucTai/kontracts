@@ -60,6 +60,7 @@ fn european_call(asset: &str, k: f64, t: f64) -> Contract {
 ///
 /// Note : on utilise la formulation standard de Merton (1976) :
 ///   le numérateur S est ajusté par e^{n·μ_j} pour le saut moyen.
+#[allow(clippy::too_many_arguments)]
 fn merton_closed_form(
     s: f64,
     k: f64,

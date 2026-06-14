@@ -979,6 +979,341 @@ fn poisson_sample(lambda: f64, rng: &mut ChaCha8Rng) -> u32 {
 }
 
 // ============================================================================
+// Rough Bergomi (J14) — volatilité rugueuse via mouvement brownien fractionnaire
+// ============================================================================
+
+/// Simulateur **Rough Bergomi** (Bayer, Friz, Gatheral 2016).
+///
+/// La log-variance est pilotée par un **mouvement brownien fractionnaire** (fBm)
+/// d'exposant de Hurst `H < 0.5`, ce qui produit des trajectoires de volatilité
+/// *rugueuses* (non lisses) reproduisant le smile de volatilité observé sur les
+/// marchés. Dynamiques risque-neutres :
+///
+/// ```text
+/// dS_t            = r·S_t·dt + √v_t·S_t·dW_t
+/// d(log v_t)      = (ξ·H·t^{H-½})·dt + ξ·dB_t^H
+/// dW_t·dB_t       = ρ·dt
+/// ```
+///
+/// où `B_t^H` est un fBm d'exposant `H ∈ (0, 1)` (rugueux si `H < ½`, brownien
+/// standard si `H = ½`).
+///
+/// # Génération du fBm : décomposition de Cholesky (exacte)
+///
+/// Les incréments du fBm sont **à mémoire longue** (non markoviens) : on ne peut
+/// pas les générer par un schéma d'Euler pas-à-pas. On génère donc la trajectoire
+/// **entière** d'un coup. Pour `n` pas, on construit la matrice de covariance
+///
+/// ```text
+/// Cov[B_i^H, B_j^H] = ½·(|i|^{2H} + |j|^{2H} − |i−j|^{2H})
+/// ```
+///
+/// puis sa factorisation de Cholesky `Cov = L·Lᵀ`. Chaque trajectoire est alors
+/// `B = L·Z` avec `Z ~ N(0, I)`. C'est **exact** mais en `O(n²)` mémoire/temps
+/// pour la factorisation (partagée entre toutes les trajectoires) et `O(n²)` par
+/// trajectoire pour le produit matrice-vecteur.
+///
+/// # Corrélation spot/vol (approximation connue)
+///
+/// Le fBm est piloté par les gaussiennes `Z` (`B = L·Z`). À chaque pas, le
+/// brownien du spot est corrélé à la **dernière innovation** `Z[idx]` du fBm
+/// (terme diagonal `L[idx][idx]·Z[idx]`) mélangée à un brownien indépendant :
+/// `dW = ρ·Z[idx]·√dt + √(1−ρ²)·dB^⊥`.
+///
+/// **Limitation** : l'incrément complet `ΔB^H = B_{t} − B_{t−dt}` recharge aussi
+/// les innovations passées (`Z[j]`, `j < idx`) du fait de la mémoire longue. En
+/// ne corrélant le spot qu'à `Z[idx]`, la corrélation spot/vol **réalisée** est
+/// atténuée en magnitude par rapport au paramètre `ρ` (le **signe**, donc l'effet
+/// de levier et le skew, reste correct). C'est l'approximation habituelle des
+/// schémas « fBm exact + spot Euler » ; une corrélation exacte demanderait de
+/// projeter l'incrément complet du fBm. Acceptable pour un modèle MVP branchable ;
+/// à raffiner si une calibration fine du skew sur `ρ` est requise (J21-fast).
+///
+/// # Bornes numériques
+///
+/// La matrice de covariance fBm devient mal conditionnée pour `H` très petit
+/// (< 0,01) ou `n` très grand (> 1000). Plages recommandées pour J14 :
+/// `H ∈ [0.05, 0.3]`, `n ≤ 250` pas. Au-delà, la Cholesky peut perdre en
+/// précision (la diagonale est planchée pour rester définie positive).
+#[derive(Debug, Clone)]
+pub struct RoughBergomiSimulator {
+    /// Nom du sous-jacent (doit matcher les `Spot(name)` du contrat).
+    pub asset: String,
+    /// Prix spot initial `S_0`.
+    pub s0: f64,
+    /// Variance initiale `v_0` (la log-vol initiale vaut `ln v_0`).
+    pub v0: f64,
+    /// Vol-de-vol `ξ` (amplitude du fBm).
+    pub xi: f64,
+    /// Exposant de Hurst `H ∈ (0, 1)` (typiquement 0,05–0,3).
+    pub h: f64,
+    /// Corrélation spot–vol `ρ ∈ [-1, 1]`.
+    pub rho: f64,
+    /// Taux risque-neutre `r` (drift + discount).
+    pub r: f64,
+}
+
+impl RoughBergomiSimulator {
+    /// Construit un `RoughBergomiSimulator`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        asset: impl Into<String>,
+        s0: f64,
+        v0: f64,
+        xi: f64,
+        h: f64,
+        rho: f64,
+        r: f64,
+    ) -> Self {
+        RoughBergomiSimulator {
+            asset: asset.into(),
+            s0,
+            v0,
+            xi,
+            h,
+            rho,
+            r,
+        }
+    }
+
+    /// Construit la matrice de covariance du fBm sur les **incréments de temps**
+    /// de la grille, puis renvoie sa factorisation de Cholesky inférieure `L`.
+    ///
+    /// On indexe par les instants `times[1..]` (le premier point `t=0` porte
+    /// `B_0 = 0` et n'entre pas dans la covariance). La covariance fBm continue
+    /// est `Cov[B_s, B_t] = ½·(s^{2H} + t^{2H} − |s−t|^{2H})`.
+    ///
+    /// Renvoie une matrice `m × m` avec `m = n_steps − 1` (nombre de points de
+    /// temps strictement positifs). Si `m == 0`, renvoie une matrice vide.
+    fn fbm_cholesky(&self, times: &[f64]) -> Vec<Vec<f64>> {
+        // Instants strictement positifs (B est défini à partir de t>0 ; B_0=0).
+        let pts: Vec<f64> = times.iter().copied().filter(|&t| t > 0.0).collect();
+        let m = pts.len();
+        if m == 0 {
+            return Vec::new();
+        }
+
+        let two_h = 2.0 * self.h;
+        let mut cov = vec![vec![0.0f64; m]; m];
+        for i in 0..m {
+            for j in 0..m {
+                let s = pts[i];
+                let t = pts[j];
+                let cov_ij = 0.5 * (s.powf(two_h) + t.powf(two_h) - (s - t).abs().powf(two_h));
+                cov[i][j] = cov_ij;
+            }
+        }
+        cholesky_lower(&cov)
+    }
+
+    /// Échantillonne `n_paths` trajectoires du **fBm sous-jacent** `B_t^H` sur
+    /// les instants strictement positifs de `times`.
+    ///
+    /// Renvoie un `Array2` de forme `[n_paths, m]` où `m` est le nombre d'instants
+    /// `> 0` dans `times`. Utile pour inspecter la rugosité (analyse R/S, scaling
+    /// de variance `Var[B_t] = t^{2H}`) indépendamment de la dynamique de prix.
+    pub fn simulate_fbm(
+        &self,
+        times: &[f64],
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Array2<f64>, KontractError> {
+        validate_grid(times)?;
+        let chol = self.fbm_cholesky(times);
+        let m = chol.len();
+
+        let mut data = vec![0.0f64; n_paths * m];
+        if m > 0 {
+            data.par_chunks_mut(m).enumerate().for_each(|(i, row)| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
+                let z: Vec<f64> = (0..m)
+                    .map(|_| rng.sample::<f64, _>(StandardNormal))
+                    .collect();
+                for (ii, cell) in row.iter_mut().enumerate() {
+                    let mut acc = 0.0;
+                    for (jj, &zj) in z.iter().enumerate().take(ii + 1) {
+                        acc += chol[ii][jj] * zj;
+                    }
+                    *cell = acc;
+                }
+            });
+        }
+
+        Array2::from_shape_vec((n_paths, m), data)
+            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+    }
+
+    /// Simule une trajectoire Rough Bergomi à partir d'une factorisation `L`
+    /// pré-calculée et d'un RNG dédié.
+    ///
+    /// `chol` est la Cholesky inférieure de la covariance fBm sur les instants
+    /// strictement positifs (taille `m = nb d'instants > 0`).
+    fn simulate_one_path(
+        &self,
+        times: &[f64],
+        chol: &[Vec<f64>],
+        rng: &mut ChaCha8Rng,
+    ) -> Vec<f64> {
+        let n_steps = times.len();
+        let mut row = vec![0.0f64; n_steps];
+
+        // Indices des pas à dt>0 (parallèles aux lignes de `chol`).
+        // On tire un vecteur Z (gaussiennes i.i.d.) de taille m, qui pilote à la
+        // fois le fBm (B = L·Z) et — via les incréments browniens — la corrélation
+        // du spot.
+        let m = chol.len();
+        let z: Vec<f64> = (0..m)
+            .map(|_| rng.sample::<f64, _>(StandardNormal))
+            .collect();
+
+        // fBm aux instants strictement positifs : B = L·Z.
+        let mut fbm = vec![0.0f64; m];
+        for (i, fbm_i) in fbm.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            // L est triangulaire inférieure : somme sur j ≤ i.
+            for (j, &zj) in z.iter().enumerate().take(i + 1) {
+                acc += chol[i][j] * zj;
+            }
+            *fbm_i = acc;
+        }
+
+        let rho_perp = (1.0 - self.rho * self.rho).max(0.0).sqrt();
+        let log_v0 = self.v0.max(1e-300).ln();
+
+        let two_h = two_h_of(self.h);
+        let mut s = self.s0;
+        row[0] = s; // convention : row[0] = s0 si times[0] = 0
+        let mut prev_t = 0.0_f64;
+
+        // `idx` parcourt les colonnes de `chol`/`fbm` (instants > 0).
+        let mut idx = 0usize;
+
+        for (k, &t) in times.iter().enumerate() {
+            let dt = t - prev_t;
+            if dt > 0.0 {
+                let sqrt_dt = dt.sqrt();
+                let z_idx = z[idx];
+                let fbm_t = fbm[idx];
+
+                // Log-variance à l'instant courant t (forme Rough Bergomi) :
+                //   log v_t = log v_0 + ξ·B_t^H − ½·ξ²·t^{2H}
+                // Le terme −½·ξ²·t^{2H} est la **correction de convexité d'Itô** :
+                // comme Var[B_t^H] = t^{2H}, on a E[exp(ξ·B_t^H)] = exp(½·ξ²·t^{2H}),
+                // donc le retrancher donne E[v_t] = v_0 **exactement** (forward
+                // variance plat). Ce n'est pas l'intégrale du drift ξ·H·t^{H-½}·dt
+                // (qui vaudrait ½·ξ·t^{2H}), mais bien le terme martingale en ξ².
+                let log_v = log_v0 + self.xi * fbm_t - 0.5 * self.xi * self.xi * t.powf(two_h);
+                let v = log_v.exp();
+                let sqrt_v = v.sqrt();
+
+                // Brownien du spot corrélé au fBm. On corrèle le spot à la
+                // **dernière innovation** z_idx du fBm (le terme diagonal
+                // L[idx][idx]·z_idx de B_t) mélangée à un brownien indépendant.
+                // C'est une approximation : l'incrément complet ΔB^H recharge aussi
+                // les innovations passées (mémoire longue), donc la corrélation
+                // spot/vol réalisée est atténuée en magnitude par rapport à ρ.
+                // Le **signe** (effet de levier) reste correct. Voir doc du struct.
+                let z_indep: f64 = rng.sample(StandardNormal);
+                let dw = (self.rho * z_idx + rho_perp * z_indep) * sqrt_dt;
+
+                // Spot : log-Euler avec la variance instantanée v.
+                s *= (self.r * dt - 0.5 * v * dt + sqrt_v * dw).exp();
+
+                idx += 1;
+            }
+            row[k] = s;
+            prev_t = t;
+        }
+        row
+    }
+}
+
+/// `2H` — petit utilitaire pour éviter de recalculer dans la boucle chaude.
+#[inline]
+fn two_h_of(h: f64) -> f64 {
+    2.0 * h
+}
+
+impl Simulator for RoughBergomiSimulator {
+    fn simulate(
+        &self,
+        times: &[f64],
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Array2<f64>, KontractError> {
+        validate_grid(times)?;
+        let n_steps = times.len();
+
+        // Factorisation de Cholesky calculée **une seule fois** et partagée par
+        // toutes les trajectoires (c'est le coût O(n²) amorti du Rough Bergomi).
+        let chol = self.fbm_cholesky(times);
+
+        let mut data = vec![0.0f64; n_paths * n_steps];
+        data.par_chunks_mut(n_steps.max(1))
+            .enumerate()
+            .for_each(|(i, row)| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
+                let path = self.simulate_one_path(times, &chol, &mut rng);
+                row.copy_from_slice(&path);
+            });
+
+        Array2::from_shape_vec((n_paths, n_steps), data)
+            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+    }
+
+    fn asset_name(&self) -> &str {
+        &self.asset
+    }
+}
+
+/// Constructeur fonctionnel pratique pour [`RoughBergomiSimulator`].
+#[allow(clippy::too_many_arguments)]
+pub fn rough_bergomi_from_params(
+    asset: &str,
+    s0: f64,
+    v0: f64,
+    xi: f64,
+    h: f64,
+    rho: f64,
+    r: f64,
+) -> RoughBergomiSimulator {
+    RoughBergomiSimulator::new(asset, s0, v0, xi, h, rho, r)
+}
+
+/// Factorisation de Cholesky inférieure `L` (telle que `A = L·Lᵀ`) d'une matrice
+/// symétrique semi-définie positive `a` (stockée en lignes).
+///
+/// Implémentation dense classique en `O(n³)`. Pour rester robuste face aux
+/// covariances fBm légèrement mal conditionnées (H petit, n grand), les pivots
+/// négatifs par erreur d'arrondi sont planchés à 0 (la matrice est alors traitée
+/// comme semi-définie positive plutôt que définie positive). Aucune dépendance
+/// LAPACK n'est requise.
+fn cholesky_lower(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let n = a.len();
+    let mut l = vec![vec![0.0f64; n]; n];
+    for i in 0..n {
+        for j in 0..=i {
+            let mut sum = a[i][j];
+            // Produit scalaire des lignes i et j sur [0, j) ; l'indexation par k
+            // est nécessaire (les deux lignes de `l` sont empruntées en lecture).
+            #[allow(clippy::needless_range_loop)]
+            for k in 0..j {
+                sum -= l[i][k] * l[j][k];
+            }
+            if i == j {
+                // Pivot diagonal : plancher à 0 pour absorber le bruit d'arrondi
+                // (covariance fBm SPD en théorie, semi-définie en pratique).
+                l[i][j] = sum.max(0.0).sqrt();
+            } else {
+                let pivot = l[j][j];
+                l[i][j] = if pivot > 0.0 { sum / pivot } else { 0.0 };
+            }
+        }
+    }
+    l
+}
+
+// ============================================================================
 // Utilitaires communs aux simulateurs J12
 // ============================================================================
 
