@@ -63,6 +63,8 @@ pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
 pub mod surface; // J7b
+pub mod pde; // J19
+pub use pde::{PdeConfig, PdeSolver};
 pub use surface::{greek_surface, GreekSurface};
 
 pub mod products; // J9 (catalogue d'expressions DSL)
