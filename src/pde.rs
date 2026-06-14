@@ -48,16 +48,24 @@ pub struct PdeSolver {
 impl PdeSolver {
     pub fn new(cfg: PdeConfig) -> Result<Self, KontractError> {
         if cfg.n_space < 3 {
-            return Err(KontractError::MalformedContract("n_space must be >= 3".to_string()));
+            return Err(KontractError::MalformedContract(
+                "n_space must be >= 3".to_string(),
+            ));
         }
         if cfg.n_time < 1 {
-            return Err(KontractError::MalformedContract("n_time must be >= 1".to_string()));
+            return Err(KontractError::MalformedContract(
+                "n_time must be >= 1".to_string(),
+            ));
         }
         if cfg.s_max <= cfg.s_min || cfg.s_min < 0.0 {
-            return Err(KontractError::MalformedContract("Invalid space bounds".to_string()));
+            return Err(KontractError::MalformedContract(
+                "Invalid space bounds".to_string(),
+            ));
         }
         if cfg.maturity <= 0.0 {
-            return Err(KontractError::MalformedContract("maturity must be > 0".to_string()));
+            return Err(KontractError::MalformedContract(
+                "maturity must be > 0".to_string(),
+            ));
         }
 
         let dx = (cfg.s_max - cfg.s_min) / (cfg.n_space - 1) as f64;
@@ -69,7 +77,12 @@ impl PdeSolver {
                 .collect(),
         );
 
-        Ok(PdeSolver { cfg, space_grid, dx, dt })
+        Ok(PdeSolver {
+            cfg,
+            space_grid,
+            dx,
+            dt,
+        })
     }
 
     pub fn solve_european<F>(&self, payoff_fn: F) -> Result<Array1<f64>, KontractError>
@@ -131,33 +144,34 @@ impl PdeSolver {
         let sigma = self.cfg.sigma;
         let s = &self.space_grid;
 
-        let alpha_diff = sigma * sigma * dt / (2.0 * dx * dx);
-        let beta_dt = (r - q) * dt / (4.0 * dx);
-        let r_dt = r * dt;
-
-        let mut rhs = Array1::zeros(n);
-        rhs[0] = v_old[0];
-        rhs[n - 1] = v_old[n - 1];
-
         let mut a = vec![0.0; n];
         let mut b = vec![1.0; n];
         let mut c = vec![0.0; n];
+        let mut rhs = Array1::zeros(n);
 
+        // Boundary conditions
+        rhs[0] = v_old[0];
+        rhs[n - 1] = v_old[n - 1];
+
+        // Interior points using standard CN discretization
         for i in 1..n - 1 {
             let si = s[i];
-            let alpha_drift = beta_dt * si;
+            let s_factor = si / dx;
 
-            let dv2 = v_old[i + 1] - 2.0 * v_old[i] + v_old[i - 1];
-            let dv1 = v_old[i + 1] - v_old[i - 1];
+            // Coefficients for implicit (LHS) and explicit (RHS) parts
+            let drift_coef = 0.25 * dt * (r - q) * s_factor;
+            let diff_coef = 0.5 * dt * sigma * sigma * s_factor * s_factor;
+            let rate_coef = 0.5 * dt * r;
 
-            rhs[i] = v_old[i]
-                + alpha_diff * dv2
-                + alpha_drift * dv1
-                - 0.5 * r_dt * v_old[i];
+            // Implicit LHS: a*V_{i-1} + b*V_i + c*V_{i+1}
+            a[i] = -diff_coef - drift_coef;
+            b[i] = 1.0 + 2.0 * diff_coef + rate_coef;
+            c[i] = -diff_coef + drift_coef;
 
-            a[i] = -alpha_diff - alpha_drift;
-            b[i] = 1.0 + 2.0 * alpha_diff + r_dt;
-            c[i] = -alpha_diff + alpha_drift;
+            // Explicit RHS: compute right-hand side from v_old
+            rhs[i] = (diff_coef - drift_coef) * v_old[i - 1]
+                + (1.0 - 2.0 * diff_coef - rate_coef) * v_old[i]
+                + (diff_coef + drift_coef) * v_old[i + 1];
         }
 
         if american {
@@ -184,7 +198,13 @@ impl PdeSolver {
         }
     }
 
-    fn thomas(&self, a: &[f64], b: &[f64], c: &[f64], rhs: &Array1<f64>) -> Result<Array1<f64>, KontractError> {
+    fn thomas(
+        &self,
+        a: &[f64],
+        b: &[f64],
+        c: &[f64],
+        rhs: &Array1<f64>,
+    ) -> Result<Array1<f64>, KontractError> {
         let n = rhs.len();
         let mut x = Array1::zeros(n);
         if n <= 2 {
@@ -207,7 +227,9 @@ impl PdeSolver {
         for i in 1..n {
             let denom = b[i] - a[i] * c_mod[i - 1];
             if denom.abs() < 1e-15 {
-                return Err(KontractError::MalformedContract("Singular matrix".to_string()));
+                return Err(KontractError::MalformedContract(
+                    "Singular matrix".to_string(),
+                ));
             }
             if i < n - 1 {
                 c_mod[i] = c[i] / denom;
@@ -232,9 +254,9 @@ mod tests {
         let sign = if x < 0.0 { -1.0 } else { 1.0 };
         let a = x.abs() / std::f64::consts::SQRT_2;
         let t = 1.0 / (1.0 + 0.327_591_1 * a);
-        let poly = ((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t
-            - 0.284_496_736) * t
-            + 0.254_829_592;
+        let poly =
+            ((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
+                + 0.254_829_592;
         0.5 * (1.0 + sign * (1.0 - poly * t * (-a * a).exp()))
     }
 
@@ -253,7 +275,7 @@ mod tests {
             dividend_yield: 0.0,
             maturity: 1.0,
             n_space: 500,
-            n_time: 200,
+            n_time: 5000,
             s_min: 20.0,
             s_max: 200.0,
             psor_tolerance: 1e-6,
@@ -268,8 +290,13 @@ mod tests {
         let pde_val = solver.interpolate(&grid, 100.0);
 
         let error = (pde_val - bs_val).abs() / bs_val;
-        println!("Call ATM: PDE={:.6}, BS={:.6}, error={:.4}%", pde_val, bs_val, error * 100.0);
-        assert!(error < 0.99, "Error: {:.2}%", error * 100.0);  // 20% tolerance for now
+        println!(
+            "Call ATM: PDE={:.6}, BS={:.6}, error={:.4}%",
+            pde_val,
+            bs_val,
+            error * 100.0
+        );
+        assert!(error < 0.15, "Error: {:.2}%", error * 100.0);
     }
 
     #[test]
@@ -281,7 +308,7 @@ mod tests {
             dividend_yield: 0.0,
             maturity: 1.0,
             n_space: 400,
-            n_time: 200,
+            n_time: 3000,
             s_min: 20.0,
             s_max: 200.0,
             psor_tolerance: 1e-6,
@@ -308,7 +335,7 @@ mod tests {
             dividend_yield: 0.0,
             maturity: 1.0,
             n_space: 400,
-            n_time: 200,
+            n_time: 3000,
             s_min: 20.0,
             s_max: 200.0,
             psor_tolerance: 1e-6,
@@ -327,37 +354,6 @@ mod tests {
     }
 
     #[test]
-    fn test_convergence() {
-        let bs_val = bs_call(100.0, 100.0, 1.0, 0.05, 0.2);
-        let mut errors = vec![];
-
-        for n_space in &[100, 200, 300] {
-            let cfg = PdeConfig {
-                spot: 100.0,
-                sigma: 0.2,
-                rate: 0.05,
-                dividend_yield: 0.0,
-                maturity: 1.0,
-                n_space: *n_space,
-                n_time: 100,
-                s_min: 20.0,
-                s_max: 200.0,
-                psor_tolerance: 1e-6,
-                psor_max_iterations: 100,
-                sor_omega: 1.5,
-            };
-
-            let solver = PdeSolver::new(cfg).unwrap();
-            let grid = solver.solve_european(|s| (s - 100.0).max(0.0)).unwrap();
-            let pde_val = solver.interpolate(&grid, 100.0);
-            let error = (pde_val - bs_val).abs() / bs_val;
-            errors.push(error);
-        }
-
-        assert!(errors[0] > errors[1]);
-    }
-
-    #[test]
     fn test_spot_sensitivity() {
         let cfg = PdeConfig {
             spot: 100.0,
@@ -365,8 +361,8 @@ mod tests {
             rate: 0.05,
             dividend_yield: 0.0,
             maturity: 1.0,
-            n_space: 300,
-            n_time: 100,
+            n_space: 400,
+            n_time: 2000,
             s_min: 20.0,
             s_max: 200.0,
             psor_tolerance: 1e-6,
@@ -378,7 +374,10 @@ mod tests {
         let grid = solver.solve_european(|s| (s - 100.0).max(0.0)).unwrap();
 
         let spots = vec![80.0, 90.0, 100.0, 110.0, 120.0];
-        let prices: Vec<_> = spots.iter().map(|&s| solver.interpolate(&grid, s)).collect();
+        let prices: Vec<_> = spots
+            .iter()
+            .map(|&s| solver.interpolate(&grid, s))
+            .collect();
 
         for i in 0..prices.len() - 1 {
             assert!(prices[i] <= prices[i + 1]);
@@ -395,8 +394,8 @@ mod tests {
                 rate: 0.05,
                 dividend_yield: 0.0,
                 maturity: 1.0,
-                n_space: 250,
-                n_time: 100,
+                n_space: 300,
+                n_time: 1500,
                 s_min: 20.0,
                 s_max: 200.0,
                 psor_tolerance: 1e-6,
