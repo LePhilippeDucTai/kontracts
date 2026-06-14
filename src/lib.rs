@@ -49,6 +49,11 @@ pub use mlmc::{
     MlmcResult,
 };
 
+pub mod market_data; // J21
+pub use market_data::{
+    build_surface, implied_volatility, load_csv, OptionQuote, VolatilitySurface,
+};
+
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
