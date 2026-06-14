@@ -127,6 +127,43 @@ pub trait Simulator: Send + Sync {
     fn gbm_params(&self) -> Option<(f64, f64)> {
         None
     }
+
+    /// Simule une **paire couplée** fine / grossière pour Multilevel MC (jalon J18).
+    ///
+    /// Au niveau `level`, le pas fin est `Δt_f = T / 2^level` et le pas grossier
+    /// est `Δt_c = T / 2^(level−1)` (deux fois plus gros). La clé de MLMC est que
+    /// les deux discrétisations **partagent les mêmes incréments browniens** : à
+    /// chaque pas grossier correspond la somme de deux incréments fins. C'est ce
+    /// couplage qui fait décroître la variance `Var(V_fine − V_coarse)` avec le
+    /// niveau.
+    ///
+    /// Renvoie `Some((fine_paths, coarse_paths))` où :
+    /// - `fine_paths`  : grille `[0, Δt_f, 2Δt_f, …, T]` (2^level + 1 points) ;
+    /// - `coarse_paths`: grille `[0, Δt_c, 2Δt_c, …, T]` (2^(level−1) + 1 points) ;
+    /// - les deux vecteurs ont `n_paths` trajectoires **appariées** (même indice =
+    ///   mêmes aléas sous-jacents).
+    ///
+    /// Le niveau 0 est dégénéré (1 seul pas, pas de niveau grossier) : renvoie
+    /// `Some((fine, vec![]))`.
+    ///
+    /// L'implémentation par défaut renvoie `None` (modèle non couplable). GBM et
+    /// Heston la surchargent ; ces deux modèles suffisent au critère du jalon.
+    #[allow(clippy::type_complexity)]
+    fn simulate_level_pair(
+        &self,
+        _t_max: f64,
+        _level: usize,
+        _n_paths: usize,
+        _seed: u64,
+    ) -> Result<Option<(Vec<Path>, Vec<Path>)>, KontractError> {
+        Ok(None)
+    }
+}
+
+/// Grille uniforme `[0, T/n, 2T/n, …, T]` (n+1 points).
+fn uniform_grid(t_max: f64, n_steps: usize) -> Vec<f64> {
+    let n = n_steps.max(1);
+    (0..=n).map(|k| t_max * (k as f64) / (n as f64)).collect()
 }
 
 /// Mouvement brownien géométrique pour un sous-jacent unique.
@@ -254,6 +291,87 @@ impl Simulator for Gbm {
 
     fn gbm_params(&self) -> Option<(f64, f64)> {
         Some((self.s0, self.sigma))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn simulate_level_pair(
+        &self,
+        t_max: f64,
+        level: usize,
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Option<(Vec<Path>, Vec<Path>)>, KontractError> {
+        let n_fine = 1usize << level; // 2^level
+        let fine_grid = uniform_grid(t_max, n_fine);
+        let dt_f = t_max / n_fine as f64;
+        let drift_f = (self.mu - 0.5 * self.sigma * self.sigma) * dt_f;
+        let sqrt_dt_f = dt_f.sqrt();
+
+        // Niveau grossier : un pas pour deux pas fins (sauf niveau 0).
+        let coarse: bool = level > 0;
+        let n_coarse = if coarse { 1usize << (level - 1) } else { 0 };
+        let coarse_grid = if coarse {
+            uniform_grid(t_max, n_coarse)
+        } else {
+            Vec::new()
+        };
+        let dt_c = if coarse { t_max / n_coarse as f64 } else { 0.0 };
+        let drift_c = (self.mu - 0.5 * self.sigma * self.sigma) * dt_c;
+
+        let mut fine = Vec::with_capacity(n_paths);
+        let mut coarse_paths = Vec::with_capacity(n_paths);
+
+        // Génération séquentielle des aléas par trajectoire (seed dérivée de
+        // (seed, level, index)), parallélisée ensuite si nécessaire. Ici on reste
+        // simple : une trajectoire par boucle (le pricer parallélise déjà).
+        let rows: Vec<(Vec<f64>, Vec<f64>)> = (0..n_paths)
+            .into_par_iter()
+            .map(|i| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(mix(seed, level as u64 + 1), i as u64));
+
+                // Trajectoire fine.
+                let mut row_f = vec![0.0f64; fine_grid.len()];
+                let mut s_f = self.s0;
+                row_f[0] = s_f;
+                // On mémorise les incréments fins pour reconstruire le grossier.
+                let mut incs = vec![0.0f64; n_fine];
+                for k in 0..n_fine {
+                    let z: f64 = rng.sample(StandardNormal);
+                    incs[k] = z;
+                    s_f *= (drift_f + self.sigma * sqrt_dt_f * z).exp();
+                    row_f[k + 1] = s_f;
+                }
+
+                // Trajectoire grossière : Δt_c = 2·Δt_f, incrément = somme de deux
+                // incréments fins (couplage MLMC), variance 2·dt_f = dt_c.
+                let row_c = if coarse {
+                    let mut row_c = vec![0.0f64; coarse_grid.len()];
+                    let mut s_c = self.s0;
+                    row_c[0] = s_c;
+                    for j in 0..n_coarse {
+                        let dw = incs[2 * j] + incs[2 * j + 1]; // ~ N(0, 2)
+                                                                // diffusion = σ·√dt_f·dW (car dW porte déjà 2 pas de √dt_f)
+                        s_c *= (drift_c + self.sigma * sqrt_dt_f * dw).exp();
+                        row_c[j + 1] = s_c;
+                    }
+                    row_c
+                } else {
+                    Vec::new()
+                };
+
+                (row_f, row_c)
+            })
+            .collect();
+
+        for (row_f, row_c) in rows {
+            fine.push(Path::new(fine_grid.clone()).with_asset(self.asset.clone(), row_f)?);
+            if coarse {
+                coarse_paths
+                    .push(Path::new(coarse_grid.clone()).with_asset(self.asset.clone(), row_c)?);
+            }
+        }
+
+        Ok(Some((fine, coarse_paths)))
     }
 }
 
@@ -411,6 +529,95 @@ impl Simulator for HestonSimulator {
 
     fn asset_name(&self) -> &str {
         &self.asset
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn simulate_level_pair(
+        &self,
+        t_max: f64,
+        level: usize,
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Option<(Vec<Path>, Vec<Path>)>, KontractError> {
+        let n_fine = 1usize << level;
+        let fine_grid = uniform_grid(t_max, n_fine);
+        let coarse: bool = level > 0;
+        let n_coarse = if coarse { 1usize << (level - 1) } else { 0 };
+        let coarse_grid = if coarse {
+            uniform_grid(t_max, n_coarse)
+        } else {
+            Vec::new()
+        };
+
+        let rho_perp = (1.0 - self.rho * self.rho).max(0.0).sqrt();
+        let dt_f = t_max / n_fine as f64;
+
+        // Schéma Euler-Milstein commun, piloté par une suite d'incréments (z1, z2)
+        // fins. Le grossier rejoue les incréments fins par paires sommées (dt_c =
+        // 2·dt_f), garantissant le couplage browninien des deux discrétisations.
+        let simulate_from_incs = |incs: &[(f64, f64)], grid_len: usize, dt: f64| -> Vec<f64> {
+            let sqrt_dt = dt.sqrt();
+            let mut row = vec![0.0f64; grid_len];
+            let mut s = self.s0;
+            let mut v = self.v0.max(0.0);
+            row[0] = s;
+            for (step, &(z1, z2)) in incs.iter().enumerate() {
+                let sqrt_v = v.sqrt();
+                let dw_s = z1 * sqrt_dt;
+                let dw_v = (self.rho * z1 + rho_perp * z2) * sqrt_dt;
+                s *= (self.r * dt - 0.5 * v * dt + sqrt_v * dw_s).exp();
+                v = (v + self.kappa * (self.theta - v) * dt + self.sigma_v * sqrt_v * dw_v)
+                    .max(0.0);
+                row[step + 1] = s;
+            }
+            row
+        };
+
+        let rows: Vec<(Vec<f64>, Vec<f64>)> = (0..n_paths)
+            .into_par_iter()
+            .map(|i| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(mix(seed, level as u64 + 1), i as u64));
+
+                // Incréments fins en N(0,1) ; le pas fin les met à l'échelle √dt_f.
+                let mut incs_f = Vec::with_capacity(n_fine);
+                for _ in 0..n_fine {
+                    let z1: f64 = rng.sample(StandardNormal);
+                    let z2: f64 = rng.sample(StandardNormal);
+                    incs_f.push((z1, z2));
+                }
+                let row_f = simulate_from_incs(&incs_f, fine_grid.len(), dt_f);
+
+                let row_c = if coarse {
+                    // Pas grossier : dW couplé = (z_a + z_b)/√2 → N(0,1) à l'échelle
+                    // √dt_c = √(2·dt_f), donc dW_c·√dt_c = (z_a+z_b)·√dt_f.
+                    let mut incs_c = Vec::with_capacity(n_coarse);
+                    for j in 0..n_coarse {
+                        let (z1a, z2a) = incs_f[2 * j];
+                        let (z1b, z2b) = incs_f[2 * j + 1];
+                        let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+                        incs_c.push(((z1a + z1b) * inv_sqrt2, (z2a + z2b) * inv_sqrt2));
+                    }
+                    let dt_c = t_max / n_coarse as f64;
+                    simulate_from_incs(&incs_c, coarse_grid.len(), dt_c)
+                } else {
+                    Vec::new()
+                };
+
+                (row_f, row_c)
+            })
+            .collect();
+
+        let mut fine = Vec::with_capacity(n_paths);
+        let mut coarse_paths = Vec::with_capacity(n_paths);
+        for (row_f, row_c) in rows {
+            fine.push(Path::new(fine_grid.clone()).with_asset(self.asset.clone(), row_f)?);
+            if coarse {
+                coarse_paths
+                    .push(Path::new(coarse_grid.clone()).with_asset(self.asset.clone(), row_c)?);
+            }
+        }
+
+        Ok(Some((fine, coarse_paths)))
     }
 }
 

@@ -43,6 +43,12 @@ pub use sobol_simulator::{SobolGbm, SobolSimulator};
 pub mod lsm; // J17
 pub use lsm::{price_american_lsm, LsmConfig};
 
+pub mod mlmc; // J18
+pub use mlmc::{
+    estimate_variance_at_level, optimal_allocation, price_mlmc, price_mlmc_detailed, MlmcConfig,
+    MlmcResult,
+};
+
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
