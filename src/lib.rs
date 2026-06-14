@@ -62,9 +62,11 @@ pub use calibration::{
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
-pub mod pde;
-pub mod surface; // J7b // J19
+pub mod pde; // J19
+pub mod pde_2d; // J20
+pub mod surface; // J7b
 pub use pde::{PdeConfig, PdeSolver};
+pub use pde_2d::{Pde2dConfig, Pde2dSolver};
 pub use surface::{greek_surface, GreekSurface};
 
 pub mod products; // J9 (catalogue d'expressions DSL)
