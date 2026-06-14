@@ -32,7 +32,7 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J11 | Simulator trait | DONE | j11-simulator | `Simulator` trait (`simulate`, `simulate_paths`, `asset_name`) ; implémentation `Gbm` sans modification logique ; `price_gbm`/`price_batch_gbm` acceptent `&dyn Simulator` ; pricer agnostique au modèle ; 91 tests verts, régression J1–J10 vérifiée ; déverrouille J12–J14 (Heston, Dupire, SABR, Rough Bergomi) |
 | J12 | Heston + Dupire | DONE | j12-heston-dupire | `HestonSimulator` (Euler-Milstein 2D, corrélation ρ, plancher v≥0) + `DupireSimulator` (vol locale bilinéaire, formule Dupire complète avec terme rK∂C/∂K) ; `dupire_from_gbm_calls` extraction depuis grille (K,T) ; bug `row[k]=s` avant/après évolution corrigé (affectait Heston et Dupire) ; 8 tests : GBM limit σ_v=0 (<1%), GBM limit κ=100 (<1.5%), stats log-returns, ρ impact OTM, round-trip Dupire (<3%), ATM Dupire (<3%), dyn Simulator, reproductibilité ; 89+8=97 tests verts |
 | J13 | SABR + Merton | DONE | j13-sabr-merton | `SABRSimulator` (CEV stochastique, Euler log-vol exact) + `MertonJumpSimulator` (Poisson composé + diffusion GBM) ; exports via lib.rs ; 6 tests verts : SABR stable ATM, SABR β=1/ν=0 limite GBM (<1 %), SABR impact ρ OTM (signe+magnitude), Merton λ=0 limite BS (<1 %), Merton vs formule fermée (<3 %), Merton sauts positifs → OTM plus cher ; correction clippy assign_op_pattern ; 103 tests totaux |
-| J14 | Rough Bergomi | TODO | — | |
+| J14 | Rough Bergomi | IN_PROGRESS | — | |
 | J15 | Réduction variance | TODO | — | |
 | J16 | Quasi-MC | TODO | — | |
 | J17 | Américaines (LSM) | TODO | — | |
