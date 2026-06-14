@@ -46,6 +46,7 @@ fn det_cfg(rate: f64) -> McConfig {
         seed: 1,
         steps_per_year: 4,
         rate,
+        variance_reduction: None,
     }
 }
 
@@ -114,6 +115,7 @@ fn european_call_matches_black_scholes() {
         seed: 2024,
         steps_per_year: 1,
         rate: r,
+        variance_reduction: None,
     };
     let mc = price_gbm(&european_call("AAPL", k, t), &model, &cfg)
         .unwrap()

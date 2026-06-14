@@ -67,6 +67,7 @@ fn knock_out_matches_analytic_with_continuity_correction() {
         seed: 2024,
         steps_per_year: steps,
         rate: r,
+        variance_reduction: None,
     };
     let mc = price_gbm(&ko, &model, &cfg).unwrap().price;
 
@@ -93,6 +94,7 @@ fn unreachable_barrier_recovers_vanilla() {
         seed: 7,
         steps_per_year: 50,
         rate: r,
+        variance_reduction: None,
     };
     let mc = price_gbm(&ko, &model, &cfg).unwrap().price;
     let bs = bs_call(s0, k, r, sigma, t);
@@ -112,6 +114,7 @@ fn immediately_breached_barrier_is_worthless() {
         seed: 1,
         steps_per_year: 10,
         rate: 0.05,
+        variance_reduction: None,
     };
     assert_eq!(price_gbm(&ko, &model, &cfg).unwrap().price, 0.0);
 }
@@ -128,6 +131,7 @@ fn anytime_first_touch_pays_when_barrier_reached() {
         seed: 1,
         steps_per_year: 12,
         rate: 0.05,
+        variance_reduction: None,
     };
     let price = price_gbm(&amer, &model, &cfg).unwrap().price;
     assert!((price - (-0.1f64).exp()).abs() < 1e-9, "price = {price}");
@@ -143,6 +147,7 @@ fn anytime_never_activated_is_worthless() {
         seed: 1,
         steps_per_year: 12,
         rate: 0.05,
+        variance_reduction: None,
     };
     assert_eq!(price_gbm(&amer, &model, &cfg).unwrap().price, 0.0);
 }
@@ -158,6 +163,7 @@ fn knock_out_plus_knock_in_via_complement() {
         seed: 3,
         steps_per_year: 100,
         rate: r,
+        variance_reduction: None,
     };
     let ko = until(spot("AAPL").le(konst(h)), european_call("AAPL", k, t));
     let mc_ko = price_gbm(&ko, &model, &cfg).unwrap().price;

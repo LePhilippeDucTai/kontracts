@@ -50,6 +50,7 @@ fn cfg(steps: usize) -> McConfig {
         seed: 2024,
         steps_per_year: steps,
         rate: R,
+        variance_reduction: None,
     }
 }
 

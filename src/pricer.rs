@@ -22,6 +22,7 @@ use crate::ast::{Condition, Contract};
 use crate::compiler::{compile, Plan};
 use crate::observable::Path;
 use crate::simulator::Simulator;
+use crate::variance_reduction::VarianceReductionConfig;
 use crate::KontractError;
 
 /// Paramètres de la simulation Monte-Carlo.
@@ -35,6 +36,9 @@ pub struct McConfig {
     pub steps_per_year: usize,
     /// Taux d'actualisation déterministe `r` (sert aussi de drift risque-neutre).
     pub rate: f64,
+    /// Configuration de réduction de variance (jalon J15).
+    /// `None` → comportement identique à J1–J14 (rétrocompatible).
+    pub variance_reduction: Option<VarianceReductionConfig>,
 }
 
 impl Default for McConfig {
@@ -44,6 +48,7 @@ impl Default for McConfig {
             seed: 42,
             steps_per_year: 50,
             rate: 0.0,
+            variance_reduction: None,
         }
     }
 }
@@ -86,6 +91,9 @@ impl PriceResult {
 /// Le nom historique (`price_gbm`) est conservé pour compatibilité, mais le
 /// pricer ne dépend plus que de l'interface [`Simulator`] (jalon J11) : n'importe
 /// quel modèle (Heston, Dupire… en J12+) peut être passé via `&dyn Simulator`.
+///
+/// Si `cfg.variance_reduction` est défini (jalon J15), applique les techniques
+/// antithétiques et/ou de variable de contrôle avant de retourner le résultat.
 pub fn price_gbm(
     contract: &Contract,
     model: &dyn Simulator,
@@ -93,8 +101,112 @@ pub fn price_gbm(
 ) -> Result<PriceResult, KontractError> {
     let plan = compile(contract)?;
     let grid = plan.time_grid(cfg.steps_per_year);
+
+    // ── Réduction de variance (J15) ─────────────────────────────────────────
+    if let Some(vr) = &cfg.variance_reduction {
+        return price_gbm_with_vr(contract, model, cfg, &grid, vr);
+    }
+
+    // ── Chemin standard (J1–J14, rétrocompatible) ───────────────────────────
     let paths = model.simulate_paths(&grid, cfg.n_paths, cfg.seed)?;
     price_on_paths(contract, &paths, &grid, cfg.rate)
+}
+
+/// Implémentation interne de `price_gbm` avec réduction de variance active (J15).
+///
+/// Deux techniques orthogonales :
+/// - **Antithétiques** : n_paths/2 paires (Z, −Z) → moyenne des deux estimateurs.
+/// - **Variable de contrôle** : call ATM GBM connu analytiquement (Black-Scholes).
+fn price_gbm_with_vr(
+    contract: &Contract,
+    model: &dyn Simulator,
+    cfg: &McConfig,
+    grid: &[f64],
+    vr: &VarianceReductionConfig,
+) -> Result<PriceResult, KontractError> {
+    use crate::ast::{at, konst, one, scale, spot, when};
+    use crate::variance_reduction::{
+        apply_control_variate, black_scholes_call, price_antithetic_on_paths,
+    };
+
+    if vr.use_antithetic {
+        let n_half = cfg.n_paths / 2;
+        match model.simulate_antithetic_paths(grid, n_half, cfg.seed)? {
+            Some((bases, antis)) => {
+                if vr.use_control_variate {
+                    // Antithétique + variable de contrôle combinés.
+                    let (s0, sigma) = model.gbm_params().unwrap_or((100.0, 0.2));
+                    let t_mat = *grid.last().unwrap_or(&1.0);
+                    let asset = model.asset_name();
+                    let ctrl_call = when(
+                        at(t_mat),
+                        scale((spot(asset) - konst(s0)).max(konst(0.0)), one("USD")),
+                    );
+                    let bs_price = black_scholes_call(s0, s0, t_mat, cfg.rate, sigma);
+
+                    let res_anti =
+                        price_antithetic_on_paths(contract, &bases, &antis, grid, cfg.rate)?;
+                    let ctrl_anti =
+                        price_antithetic_on_paths(&ctrl_call, &bases, &antis, grid, cfg.rate)?;
+
+                    let corrected_price =
+                        apply_control_variate(res_anti.price, ctrl_anti.price, bs_price, 1.0);
+                    let n = bases.len() + antis.len();
+                    let std_error = res_anti.sample_std / (n as f64).sqrt();
+                    let ci95 = Z95 * std_error;
+                    Ok(PriceResult {
+                        price: corrected_price,
+                        sample_std: res_anti.sample_std,
+                        std_error,
+                        ci95_low: corrected_price - ci95,
+                        ci95_high: corrected_price + ci95,
+                        n_paths: n,
+                    })
+                } else {
+                    // Antithétique seul.
+                    price_antithetic_on_paths(contract, &bases, &antis, grid, cfg.rate)
+                }
+            }
+            None => {
+                // Simulateur sans support antithétique : fallback standard.
+                let paths = model.simulate_paths(grid, cfg.n_paths, cfg.seed)?;
+                if vr.use_control_variate {
+                    apply_cv_on_paths(contract, model, &paths, grid, cfg)
+                } else {
+                    price_on_paths(contract, &paths, grid, cfg.rate)
+                }
+            }
+        }
+    } else if vr.use_control_variate {
+        let paths = model.simulate_paths(grid, cfg.n_paths, cfg.seed)?;
+        apply_cv_on_paths(contract, model, &paths, grid, cfg)
+    } else {
+        // VR config présente mais options inactives → comportement standard.
+        let paths = model.simulate_paths(grid, cfg.n_paths, cfg.seed)?;
+        price_on_paths(contract, &paths, grid, cfg.rate)
+    }
+}
+
+/// Applique la variable de contrôle (call ATM) sur des trajectoires déjà simulées.
+fn apply_cv_on_paths(
+    contract: &Contract,
+    model: &dyn Simulator,
+    paths: &[crate::observable::Path],
+    grid: &[f64],
+    cfg: &McConfig,
+) -> Result<PriceResult, KontractError> {
+    use crate::ast::{at, konst, one, scale, spot, when};
+    use crate::variance_reduction::{black_scholes_call, price_control_variate_on_paths};
+
+    let (s0, sigma) = model.gbm_params().unwrap_or((100.0, 0.2));
+    let t_mat = *grid.last().unwrap_or(&1.0);
+    let asset = model.asset_name();
+    let ctrl_call = when(
+        at(t_mat),
+        scale((spot(asset) - konst(s0)).max(konst(0.0)), one("USD")),
+    );
+    let bs_price = black_scholes_call(s0, s0, t_mat, cfg.rate, sigma);
+    price_control_variate_on_paths(contract, &ctrl_call, bs_price, 1.0, paths, grid, cfg.rate)
 }
 
 /// Évalue un contrat sur des trajectoires **déjà simulées** (parallèle par path).
@@ -165,6 +277,12 @@ pub fn price_batch_gbm(
 }
 
 /// Agrège les valeurs actualisées par trajectoire en prix + diagnostics MC.
+///
+/// Alias public(crate) pour les modules de réduction de variance (J15+).
+pub(crate) fn summarize_pvs(pvs: &[f64]) -> PriceResult {
+    summarize(pvs)
+}
+
 fn summarize(pvs: &[f64]) -> PriceResult {
     let n = pvs.len();
     let price = pvs.iter().sum::<f64>() / n.max(1) as f64;
@@ -190,6 +308,19 @@ fn summarize(pvs: &[f64]) -> PriceResult {
         ci95_high: price + Z95 * std_error,
         n_paths: n,
     }
+}
+
+/// Valeur actualisée d'un contrat sur une trajectoire individuelle.
+///
+/// Exposé publiquement pour la réduction de variance (J15+) : calcul du β optimal
+/// par trajectoire, tests, etc.
+pub fn present_value_pub(
+    contract: &Contract,
+    path: &Path,
+    grid: &[f64],
+    rate: f64,
+) -> Result<f64, KontractError> {
+    present_value(contract, path, grid, rate)
 }
 
 /// Valeur actualisée (à `t = 0`) d'un contrat sur une trajectoire.

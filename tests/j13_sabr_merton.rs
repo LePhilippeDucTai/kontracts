@@ -109,6 +109,7 @@ fn mc_cfg(r: f64) -> McConfig {
         seed: 42,
         steps_per_year: 100,
         rate: r,
+        variance_reduction: None,
     }
 }
 
@@ -182,6 +183,7 @@ fn sabr_beta1_nu0_reduces_to_gbm() {
         seed: 42,
         steps_per_year: 100,
         rate: r,
+        variance_reduction: None,
     };
 
     let mc_price = price_gbm(&contract, &sabr, &cfg)
@@ -290,6 +292,7 @@ fn merton_lambda_zero_reduces_to_bs() {
         seed: 42,
         steps_per_year: 100,
         rate: r,
+        variance_reduction: None,
     };
 
     let mc_price = price_gbm(&contract, &merton, &cfg)
@@ -322,6 +325,7 @@ fn merton_mc_vs_closed_form() {
         seed: 42,
         steps_per_year: 100,
         rate: r,
+        variance_reduction: None,
     };
 
     let mc_price = price_gbm(&contract, &merton, &cfg)
@@ -363,6 +367,7 @@ fn merton_positive_jumps_increase_otm_call_price() {
         seed: 42,
         steps_per_year: 100,
         rate: r,
+        variance_reduction: None,
     };
 
     let price_merton = price_gbm(&contract, &merton, &cfg)

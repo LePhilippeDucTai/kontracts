@@ -256,6 +256,7 @@ impl PyContract {
             seed,
             steps_per_year,
             rate: model.r,
+            variance_reduction: None,
         };
         let res = price_gbm(&self.inner, &model.to_gbm(), &cfg).map_err(to_py_err)?;
         Ok(PyPriceResult {
@@ -282,6 +283,7 @@ impl PyContract {
             seed,
             steps_per_year,
             rate: model.r,
+            variance_reduction: None,
         };
         let g = greeks_gbm(
             &self.inner,

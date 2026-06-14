@@ -30,7 +30,12 @@ pub mod compiler; // J4
 pub use compiler::{compile, Plan};
 
 pub mod pricer; // J5
-pub use pricer::{price_batch_gbm, price_gbm, price_on_paths, McConfig, PriceResult};
+pub use pricer::{
+    present_value_pub, price_batch_gbm, price_gbm, price_on_paths, McConfig, PriceResult,
+};
+
+pub mod variance_reduction; // J15
+pub use variance_reduction::VarianceReductionConfig;
 
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};

@@ -56,6 +56,7 @@ fn mc_cfg(r: f64) -> McConfig {
         seed: 42,
         steps_per_year: 50,
         rate: r,
+        variance_reduction: None,
     }
 }
 
@@ -359,6 +360,7 @@ fn both_simulators_work_via_dyn_simulator() {
         seed: 7,
         steps_per_year: 50,
         rate: r,
+        variance_reduction: None,
     };
 
     // Heston via dyn Simulator
@@ -391,6 +393,7 @@ fn heston_reproducibility() {
         n_paths: 10_000,
         steps_per_year: 20,
         rate: 0.05,
+        variance_reduction: None,
     };
     let cfg_b = McConfig {
         seed: 5678,

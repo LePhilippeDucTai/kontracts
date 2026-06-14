@@ -19,6 +19,7 @@ fn cfg() -> McConfig {
         seed: 2024,
         steps_per_year: 1,
         rate: 0.05,
+        variance_reduction: None,
     }
 }
 

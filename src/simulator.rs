@@ -104,6 +104,29 @@ pub trait Simulator: Send + Sync {
     /// Sert à l'implémentation par défaut de [`Simulator::simulate_paths`] pour
     /// étiqueter les trajectoires (doit matcher les `Spot(name)` du contrat).
     fn asset_name(&self) -> &str;
+
+    /// Simule des trajectoires **antithétiques** (paires base + −Z) pour la
+    /// réduction de variance (jalon J15).
+    ///
+    /// Renvoie `Some((paths_base, paths_anti))` si le simulateur supporte les
+    /// variables antithétiques, `None` sinon. L'implémentation par défaut renvoie
+    /// `None` ; les simulateurs GBM la surchargent.
+    #[allow(clippy::type_complexity)]
+    fn simulate_antithetic_paths(
+        &self,
+        _times: &[f64],
+        _n_half: usize,
+        _seed: u64,
+    ) -> Result<Option<(Vec<Path>, Vec<Path>)>, KontractError> {
+        Ok(None)
+    }
+
+    /// Renvoie `(s0, sigma)` pour la construction d'une variable de contrôle
+    /// (call ATM, jalon J15). Renvoie `None` si le simulateur n'est pas un GBM
+    /// ou ne peut pas fournir ces paramètres.
+    fn gbm_params(&self) -> Option<(f64, f64)> {
+        None
+    }
 }
 
 /// Mouvement brownien géométrique pour un sous-jacent unique.
@@ -208,6 +231,30 @@ impl Simulator for Gbm {
     fn asset_name(&self) -> &str {
         &self.asset
     }
+
+    #[allow(clippy::type_complexity)]
+    fn simulate_antithetic_paths(
+        &self,
+        times: &[f64],
+        n_half: usize,
+        seed: u64,
+    ) -> Result<Option<(Vec<Path>, Vec<Path>)>, KontractError> {
+        use crate::variance_reduction::simulate_antithetic_gbm;
+        let (bases, antis) = simulate_antithetic_gbm(
+            &self.asset,
+            self.s0,
+            self.mu,
+            self.sigma,
+            times,
+            n_half,
+            seed,
+        )?;
+        Ok(Some((bases, antis)))
+    }
+
+    fn gbm_params(&self) -> Option<(f64, f64)> {
+        Some((self.s0, self.sigma))
+    }
 }
 
 /// Vérifie que la grille est non vide, à valeurs positives et croissante.
@@ -228,7 +275,7 @@ fn validate_grid(times: &[f64]) -> Result<(), KontractError> {
 }
 
 /// Mélange (seed, index) en une graine bien décorrélée (constante de SplitMix64).
-fn mix(seed: u64, index: u64) -> u64 {
+pub(crate) fn mix(seed: u64, index: u64) -> u64 {
     seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
