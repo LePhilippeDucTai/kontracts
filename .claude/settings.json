@@ -1,14 +1,21 @@
 {
   "skills": {
     "jalon": {
-      "description": "Orchestration des jalons kontract — affiche l'état, démarre, reprend et clôture les jalons de PROGRESS.md. Usage: /jalon [status|start|resume|done|stop]",
+      "description": "Orchestration des jalons kontract — /jalon [status|start|resume|done|stop|auto]. AUTO: lance agent, implémente, marque DONE automatiquement.",
       "command": ".claude/skills/jalon.sh",
       "userInvocable": true
+    }
+  },
+  "hooks": {
+    "post-commit": {
+      "description": "Après commit: marque jalon DONE si tests verts + tag de jalon détecté",
+      "command": ".claude/hooks/post-commit-auto-done.sh"
     }
   },
   "permissions": {
     "allow": [
       "Bash(.claude/skills/jalon.sh*)",
+      "Bash(.claude/hooks/post-commit-auto-done.sh*)",
       "Bash(cargo fmt*)",
       "Bash(cargo clippy*)",
       "Bash(cargo test*)",
@@ -19,7 +26,8 @@
       "Bash(git commit*)",
       "Bash(git push*)",
       "Bash(git tag*)",
-      "Bash(git log*)"
+      "Bash(git log*)",
+      "Bash(git describe*)"
     ]
   }
 }

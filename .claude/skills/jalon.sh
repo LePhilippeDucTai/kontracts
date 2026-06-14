@@ -3,7 +3,8 @@
 # Skill : /jalon — orchestration des jalons kontract
 # Usage: jalon [status|start|resume|done|stop|help]
 #
-# Lit PROGRESS.md pour l'état, aide Claude à implémenter le jalon suivant.
+# AUTOMATION: Hook post-commit détecte tag jXX-* + tests verts → marque DONE auto.
+# Workflow: /jalon start → impl+tests → git commit+tag → DONE auto (ou /jalon done)
 
 set -euo pipefail
 
@@ -150,6 +151,7 @@ function cmd_info() {
 }
 
 # Démarre un jalon (TODO → IN_PROGRESS)
+# AUTOMATION: Une fois committé avec tag jXX-*, DONE est auto-marqué si tests ✓
 function cmd_start() {
   local j
   j=$(current_jalon)
@@ -168,6 +170,18 @@ function cmd_start() {
   sed -i "/^| $j /s/| TODO |/| IN_PROGRESS |/" "$PROGRESS"
 
   success "$j marqué IN_PROGRESS"
+  echo ""
+  echo "┌─────────────────────────────────────────────────────────"
+  echo "│ WORKFLOW AUTOMATISÉ:"
+  echo "│  1. Implémenter le jalon (voir contexte ci-dessous)"
+  echo "│  2. cargo test --release (doit être vert)"
+  echo "│  3. git commit -m '...'"
+  echo "│  4. git tag ${j}-<slug>"
+  echo "│  5. git push + git push --tags"
+  echo "│"
+  echo "│ ✓ Le hook post-commit détecte le tag et marque auto DONE"
+  echo "│   si les tests passent (sinon: /jalon done manuel)"
+  echo "└─────────────────────────────────────────────────────────"
   echo ""
   cmd_info "$j"
 }
