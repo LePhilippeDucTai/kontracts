@@ -145,9 +145,7 @@ fn extract_obs(any: &Bound<'_, PyAny>) -> PyResult<Observable> {
     } else if let Ok(f) = any.extract::<f64>() {
         Ok(Observable::Const(f))
     } else {
-        Err(PyTypeError::new_err(
-            "attendu : nombre ou Observable",
-        ))
+        Err(PyTypeError::new_err("attendu : nombre ou Observable"))
     }
 }
 

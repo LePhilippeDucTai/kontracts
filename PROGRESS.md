@@ -23,13 +23,13 @@ Statuts possibles : `TODO`, `IN_PROGRESS`, `DONE`.
 | J8 | Bindings PyO3 | DONE | j8-pyo3 | Bindings PyO3 0.21 : classes `Observable`/`Condition`/`Contract`/`GBM`/`PriceResult`/`Greeks` ; opérateurs Python (`- * / @ + ~`, comparaisons → Condition) ; `Contract.price()/greeks()` ; constructeurs `S/spot/one/zero/at/const_` + devises ; build maturin (venv) OK ; 6 tests pytest (import, fluide `@`, call vs BS <1 %, greeks, KO, portefeuille) |
 | J9c | Batch pricing | DONE | j9c-batch | `price_on_paths` (éval sur trajectoires pré-simulées) + `price_batch_gbm` : grille unifiée (union des dates, fine si barrière), **simulation unique partagée**, éval parallèle rayon par contrat ; batch ≡ pricing individuel ; **100 contrats en 0,14 s en release** (< 500 ms) ; 4 tests |
 | J9 | Produits validation | DONE | j9-products | Module `products` (catalogue d'expressions DSL, moteur agnostique) : ZC, call/put EU, forward, straddle, bull spread, digital cash-or-nothing, up/down-and-out ; tous validés vs formules fermées (9 tests). **Asian reporté** (pas d'observable d'agrégation temporelle), **swaption reportée** (taux stochastiques → J24) |
-| J10 | Release | TODO | — | |
+| J10 | Release | DONE | j10-release | CI GitHub Actions (fmt + clippy 2 modes + `cargo test --release` + build wheel & pytest) ; workflow release multi-OS (maturin-action → PyPI sur tag `v*`) ; **wheel release construite et installée dans un venv neuf** (import + pricing OK, call ATM 10,44) ; README mis à jour. Phase 1 (MVP Trader) terminée ✅ |
 
 ## Phase 2 : Modèles avancés (semaines 4–8)
 
 | Jalon | Titre | Statut | Tag git | Résumé décisions |
 |-------|-------|--------|---------|------------------|
-| J11 | Simulator trait | TODO | — | |
+| J11 | Simulator trait | DONE | j11-simulator | `Simulator` trait (`simulate`, `simulate_paths`, `asset_name`) ; implémentation `Gbm` sans modification logique ; `price_gbm`/`price_batch_gbm` acceptent `&dyn Simulator` ; pricer agnostique au modèle ; 91 tests verts, régression J1–J10 vérifiée ; déverrouille J12–J14 (Heston, Dupire, SABR, Rough Bergomi) |
 | J12 | Heston + Dupire | TODO | — | |
 | J13 | SABR + Merton | TODO | — | |
 | J14 | Rough Bergomi | TODO | — | |

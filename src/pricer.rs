@@ -21,7 +21,7 @@ use rayon::prelude::*;
 use crate::ast::{Condition, Contract};
 use crate::compiler::{compile, Plan};
 use crate::observable::Path;
-use crate::simulator::Gbm;
+use crate::simulator::Simulator;
 use crate::KontractError;
 
 /// Paramètres de la simulation Monte-Carlo.
@@ -81,10 +81,14 @@ impl PriceResult {
     }
 }
 
-/// Price un contrat sous un modèle GBM mono-sous-jacent.
+/// Price un contrat sous un [`Simulator`] quelconque (GBM par défaut).
+///
+/// Le nom historique (`price_gbm`) est conservé pour compatibilité, mais le
+/// pricer ne dépend plus que de l'interface [`Simulator`] (jalon J11) : n'importe
+/// quel modèle (Heston, Dupire… en J12+) peut être passé via `&dyn Simulator`.
 pub fn price_gbm(
     contract: &Contract,
-    model: &Gbm,
+    model: &dyn Simulator,
     cfg: &McConfig,
 ) -> Result<PriceResult, KontractError> {
     let plan = compile(contract)?;
@@ -119,7 +123,7 @@ pub fn price_on_paths(
 /// coûte donc qu'une simulation + des évaluations vectorisées.
 pub fn price_batch_gbm(
     contracts: &[Contract],
-    model: &Gbm,
+    model: &dyn Simulator,
     cfg: &McConfig,
 ) -> Result<Vec<PriceResult>, KontractError> {
     if contracts.is_empty() {
