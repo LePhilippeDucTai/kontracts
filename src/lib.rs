@@ -37,6 +37,9 @@ pub use pricer::{
 pub mod variance_reduction; // J15
 pub use variance_reduction::VarianceReductionConfig;
 
+pub mod sobol_simulator; // J16
+pub use sobol_simulator::{SobolGbm, SobolSimulator};
+
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
