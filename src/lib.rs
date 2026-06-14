@@ -54,6 +54,11 @@ pub use market_data::{
     build_surface, implied_volatility, load_csv, OptionQuote, VolatilitySurface,
 };
 
+pub mod calibration; // J21-fast
+pub use calibration::{
+    fit_gbm_volatility, fit_heston_parameters, CalibrationResult, FastCalibrationConfig,
+};
+
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
