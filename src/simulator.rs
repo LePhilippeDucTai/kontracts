@@ -1,4 +1,6 @@
-//! Simulateur Monte-Carlo (jalon J3).
+//! Simulateur Monte-Carlo (jalons J3, J12).
+//!
+//! # GBM (J3)
 //!
 //! Génère des trajectoires de prix sous un mouvement brownien géométrique (GBM).
 //! Le schéma est **exact** (log-normal fermé), donc sans biais de discrétisation :
@@ -7,7 +9,31 @@
 //! S_{t+dt} = S_t · exp[ (μ − ½σ²)·dt + σ·√dt·Z ],   Z ~ N(0, 1)
 //! ```
 //!
-//! Conventions (cf. CLAUDE.md) :
+//! # Heston (J12)
+//!
+//! Modèle stochastique à volatilité bidimensionnelle (spot, variance) :
+//!
+//! ```text
+//! dS = r·S·dt + √v·S·dW_S
+//! dv = κ(θ - v)·dt + σ_v·√v·dW_v
+//! dW_S·dW_v = ρ·dt
+//! ```
+//!
+//! Schéma Euler-Milstein ; la variance est planchée à 0 (troncature simple).
+//!
+//! # Dupire (J12)
+//!
+//! Volatilité locale déterministe `σ_loc(S, t)` extraite d'une surface de prix
+//! d'options européennes via la formule de Dupire :
+//!
+//! ```text
+//! σ_loc(K, T)² = 2·∂C/∂T / (K²·∂²C/∂K²)
+//! ```
+//!
+//! Simulation Euler avec interpolation bilinéaire de σ_loc sur la grille.
+//!
+//! # Conventions (cf. CLAUDE.md)
+//!
 //!   - arrays via `ndarray` (`Array2` de forme `[n_paths, n_steps]`),
 //!   - parallélisme via `rayon` (une trajectoire par tâche),
 //!   - RNG seedable et **reproductible indépendamment de l'ordonnancement** :
@@ -204,4 +230,442 @@ fn validate_grid(times: &[f64]) -> Result<(), KontractError> {
 /// Mélange (seed, index) en une graine bien décorrélée (constante de SplitMix64).
 fn mix(seed: u64, index: u64) -> u64 {
     seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+// ============================================================================
+// Heston (J12) — simulateur stochastique à 2 dimensions (spot, variance)
+// ============================================================================
+
+/// Paramètres du modèle de Heston.
+///
+/// Dynamiques risque-neutres :
+///
+/// ```text
+/// dS = r·S·dt + √v·S·dW_S
+/// dv = κ(θ - v)·dt + σ_v·√v·dW_v
+/// dW_S·dW_v = ρ·dt
+/// ```
+///
+/// La variance `v` est planchée à 0 (troncature simple) ; la condition de Feller
+/// `2κθ ≥ σ_v²` n'est pas vérifiée — c'est à l'utilisateur de calibrer
+/// correctement ses paramètres.
+#[derive(Debug, Clone)]
+pub struct HestonSimulator {
+    /// Nom du sous-jacent (doit matcher les `Spot(name)` du contrat).
+    pub asset: String,
+    /// Prix spot initial `S_0`.
+    pub s0: f64,
+    /// Variance initiale `v_0` (variance, pas volatilité).
+    pub v0: f64,
+    /// Taux de retour à la moyenne `κ`.
+    pub kappa: f64,
+    /// Variance à long terme `θ`.
+    pub theta: f64,
+    /// Vol de vol `σ_v`.
+    pub sigma_v: f64,
+    /// Corrélation spot-vol `ρ ∈ [-1, 1]`.
+    pub rho: f64,
+    /// Taux risque-neutre `r` (drift + discount).
+    pub r: f64,
+}
+
+impl HestonSimulator {
+    /// Construit un `HestonSimulator` depuis ses paramètres.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        asset: impl Into<String>,
+        s0: f64,
+        v0: f64,
+        kappa: f64,
+        theta: f64,
+        sigma_v: f64,
+        rho: f64,
+        r: f64,
+    ) -> Self {
+        HestonSimulator {
+            asset: asset.into(),
+            s0,
+            v0,
+            kappa,
+            theta,
+            sigma_v,
+            rho,
+            r,
+        }
+    }
+
+    /// Simule une trajectoire Heston avec schéma Euler-Milstein 2D.
+    ///
+    /// Les deux mouvements browniens corrélés sont construits par décomposition
+    /// de Cholesky :
+    ///
+    /// ```text
+    /// dW_S = Z1·√dt
+    /// dW_v = (ρ·Z1 + √(1−ρ²)·Z2)·√dt
+    /// ```
+    fn simulate_one_path(&self, times: &[f64], rng: &mut ChaCha8Rng) -> Vec<f64> {
+        let n_steps = times.len();
+        let mut row = vec![0.0f64; n_steps];
+
+        let rho_perp = (1.0 - self.rho * self.rho).max(0.0).sqrt();
+        let mut s = self.s0;
+        let mut v = self.v0.max(0.0);
+        let mut prev_t = 0.0_f64;
+
+        for (k, &t) in times.iter().enumerate() {
+            let dt = t - prev_t;
+            if dt > 0.0 {
+                let sqrt_dt = dt.sqrt();
+                let z1: f64 = rng.sample(StandardNormal);
+                let z2: f64 = rng.sample(StandardNormal);
+
+                let sqrt_v = v.sqrt();
+                let dw_s = z1 * sqrt_dt;
+                let dw_v = (self.rho * z1 + rho_perp * z2) * sqrt_dt;
+
+                // Euler log-spot (évite les spots négatifs)
+                s *= (self.r * dt - 0.5 * v * dt + sqrt_v * dw_s).exp();
+
+                // Euler variance avec plancher à 0
+                v = (v + self.kappa * (self.theta - v) * dt + self.sigma_v * sqrt_v * dw_v)
+                    .max(0.0);
+            }
+            // Stocker le spot après évolution (même convention que Gbm :
+            // si dt=0, s est inchangé, donc row[0] = s0 quand times[0] = 0).
+            row[k] = s;
+            prev_t = t;
+        }
+        row
+    }
+}
+
+impl Simulator for HestonSimulator {
+    fn simulate(
+        &self,
+        times: &[f64],
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Array2<f64>, KontractError> {
+        validate_grid(times)?;
+        let n_steps = times.len();
+
+        let mut data = vec![0.0f64; n_paths * n_steps];
+        data.par_chunks_mut(n_steps.max(1))
+            .enumerate()
+            .for_each(|(i, row)| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
+                let path = self.simulate_one_path(times, &mut rng);
+                row.copy_from_slice(&path);
+            });
+
+        Array2::from_shape_vec((n_paths, n_steps), data)
+            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+    }
+
+    fn asset_name(&self) -> &str {
+        &self.asset
+    }
+}
+
+/// Constructeur fonctionnel pratique (alias de [`HestonSimulator::new`]).
+#[allow(clippy::too_many_arguments)]
+pub fn heston_from_params(
+    asset: &str,
+    s0: f64,
+    v0: f64,
+    kappa: f64,
+    theta: f64,
+    sigma_v: f64,
+    rho: f64,
+    r: f64,
+) -> HestonSimulator {
+    HestonSimulator::new(asset, s0, v0, kappa, theta, sigma_v, rho, r)
+}
+
+// ============================================================================
+// Dupire (J12) — simulateur à volatilité locale sur grille
+// ============================================================================
+
+/// Simulateur à **volatilité locale** de Dupire.
+///
+/// La surface `σ_loc(S, t)` est stockée sur une grille bidimensionnelle
+/// `(time_grid × spot_grid)` et interpolée bilinéairement à chaque pas.
+///
+/// Extraction depuis une surface d'options européennes via [`dupire_from_gbm_calls`].
+#[derive(Debug, Clone)]
+pub struct DupireSimulator {
+    /// Nom du sous-jacent.
+    pub asset: String,
+    /// Prix spot initial `S_0`.
+    pub s0: f64,
+    /// Taux risque-neutre.
+    pub r: f64,
+    /// Grille de spots (axe colonne de `local_vol`), croissante.
+    pub spot_grid: Vec<f64>,
+    /// Grille de temps (axe ligne de `local_vol`), croissante, en années.
+    pub time_grid: Vec<f64>,
+    /// Surface de vol locale `σ_loc(t, S)`, shape `[n_times, n_spots]`.
+    pub local_vol: Array2<f64>,
+}
+
+impl DupireSimulator {
+    /// Renvoie `σ_loc(S, t)` par interpolation bilinéaire sur la grille.
+    ///
+    /// Hors grille : clamp sur les bords (extrapolation plate).
+    fn sigma_loc(&self, s: f64, t: f64) -> f64 {
+        let (ti, tf) = interp_index(&self.time_grid, t);
+        let (si, sf) = interp_index(&self.spot_grid, s);
+
+        let n_t = self.local_vol.nrows();
+        let n_s = self.local_vol.ncols();
+
+        let ti1 = (ti + 1).min(n_t - 1);
+        let si1 = (si + 1).min(n_s - 1);
+
+        let v00 = self.local_vol[[ti, si]];
+        let v01 = self.local_vol[[ti, si1]];
+        let v10 = self.local_vol[[ti1, si]];
+        let v11 = self.local_vol[[ti1, si1]];
+
+        // Interpolation bilinéaire
+        let v0 = v00 * (1.0 - sf) + v01 * sf;
+        let v1 = v10 * (1.0 - sf) + v11 * sf;
+        v0 * (1.0 - tf) + v1 * tf
+    }
+
+    /// Simule une trajectoire Dupire (Euler log-normal avec σ_loc(S, t)).
+    fn simulate_one_path(&self, times: &[f64], rng: &mut ChaCha8Rng) -> Vec<f64> {
+        let n_steps = times.len();
+        let mut row = vec![0.0f64; n_steps];
+        let mut s = self.s0;
+        let mut prev_t = 0.0_f64;
+
+        for (k, &t) in times.iter().enumerate() {
+            let dt = t - prev_t;
+            if dt > 0.0 {
+                // Utilise s et prev_t (= t de début du pas) pour σ_loc
+                let sigma = self.sigma_loc(s, prev_t);
+                let z: f64 = rng.sample(StandardNormal);
+                s *= (self.r * dt - 0.5 * sigma * sigma * dt + sigma * dt.sqrt() * z).exp();
+            }
+            // Stocker après évolution (même convention que Gbm)
+            row[k] = s;
+            prev_t = t;
+        }
+        row
+    }
+}
+
+impl Simulator for DupireSimulator {
+    fn simulate(
+        &self,
+        times: &[f64],
+        n_paths: usize,
+        seed: u64,
+    ) -> Result<Array2<f64>, KontractError> {
+        validate_grid(times)?;
+        let n_steps = times.len();
+
+        let mut data = vec![0.0f64; n_paths * n_steps];
+        data.par_chunks_mut(n_steps.max(1))
+            .enumerate()
+            .for_each(|(i, row)| {
+                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
+                let path = self.simulate_one_path(times, &mut rng);
+                row.copy_from_slice(&path);
+            });
+
+        Array2::from_shape_vec((n_paths, n_steps), data)
+            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+    }
+
+    fn asset_name(&self) -> &str {
+        &self.asset
+    }
+}
+
+/// Extrait un [`DupireSimulator`] depuis une grille de prix de calls européens.
+///
+/// L'entrée est une surface de prix `C(K, T)` sur une grille rectangulaire
+/// `strikes × maturities`. Les prix sont supposés cohérents (pas de crossing de
+/// call spreads). Le modèle sous-jacent peut être quelconque ; la fonction
+/// applique la formule de Dupire :
+///
+/// ```text
+/// σ_loc(K, T)² = 2·∂C/∂T / (K²·∂²C/∂K²)
+/// ```
+///
+/// où les dérivées sont calculées par différences finies (centrées en K, en
+/// avance en T). La surface résultante est clampée dans `[σ_min, σ_max]` pour
+/// éviter les instabilités numériques.
+///
+/// # Arguments
+///
+/// * `asset` — nom du sous-jacent.
+/// * `s0` — prix spot initial.
+/// * `r` — taux risque-neutre.
+/// * `strikes` — grille de strikes (croissante, ≥ 3 points).
+/// * `maturities` — grille de maturités en années (croissante, ≥ 2 points).
+/// * `call_prices` — matrice `[n_maturities × n_strikes]` de prix de calls.
+///
+/// # Errors
+///
+/// Renvoie [`KontractError::MalformedContract`] si les grilles sont trop petites
+/// ou si `call_prices` n'a pas la bonne dimension.
+pub fn dupire_from_gbm_calls(
+    asset: &str,
+    s0: f64,
+    r: f64,
+    strikes: &[f64],
+    maturities: &[f64],
+    call_prices: &[f64], // longueur = n_maturities * n_strikes, ligne-majeure [mat × strike]
+) -> Result<DupireSimulator, KontractError> {
+    let n_k = strikes.len();
+    let n_t = maturities.len();
+
+    if n_k < 3 {
+        return Err(KontractError::MalformedContract(
+            "Dupire : au moins 3 strikes requis pour ∂²C/∂K²".into(),
+        ));
+    }
+    if n_t < 2 {
+        return Err(KontractError::MalformedContract(
+            "Dupire : au moins 2 maturités requises pour ∂C/∂T".into(),
+        ));
+    }
+    if call_prices.len() != n_t * n_k {
+        return Err(KontractError::MalformedContract(format!(
+            "Dupire : call_prices.len()={} ≠ n_t×n_k={}×{}={}",
+            call_prices.len(),
+            n_t,
+            n_k,
+            n_t * n_k
+        )));
+    }
+
+    // Accès C(t_i, k_j) = call_prices[i * n_k + j]
+    let c = |ti: usize, ki: usize| call_prices[ti * n_k + ki];
+
+    // On calcule n_t − 1 rangées de vol locale via différences finies en avance.
+    // Chaque rangée `ti` donne σ_loc représentatif de l'intervalle [T_ti, T_{ti+1}].
+    // La simulation utilisera σ_loc[ti] pour les pas de temps dans cet intervalle.
+    let n_t_out = n_t - 1;
+    let n_k_out = n_k;
+
+    let sigma_min = 1e-4_f64;
+    let sigma_max = 5.0_f64;
+
+    let mut local_vol_data = vec![0.0f64; n_t_out * n_k_out];
+
+    for ti in 0..n_t_out {
+        let dt = maturities[ti + 1] - maturities[ti];
+        for ki in 0..n_k_out {
+            let k = strikes[ki];
+
+            // ∂C/∂T : différence en avance entre T_ti et T_{ti+1}
+            let dc_dt = (c(ti + 1, ki) - c(ti, ki)) / dt;
+
+            // ∂C/∂K et ∂²C/∂K² : différences centrales non-uniformes à T_ti
+            let dk_prev = if ki == 0 {
+                strikes[1] - strikes[0]
+            } else {
+                strikes[ki] - strikes[ki - 1]
+            };
+            let dk_next = if ki == n_k - 1 {
+                strikes[n_k - 1] - strikes[n_k - 2]
+            } else {
+                strikes[ki + 1] - strikes[ki]
+            };
+
+            let c_prev = if ki == 0 { c(ti, 0) } else { c(ti, ki - 1) };
+            let c_next = if ki == n_k - 1 {
+                c(ti, n_k - 1)
+            } else {
+                c(ti, ki + 1)
+            };
+            let c_mid = c(ti, ki);
+
+            let h1 = dk_prev;
+            let h2 = dk_next;
+
+            // ∂C/∂K : différence centrale (C(K+h2) − C(K−h1)) / (h1 + h2)
+            let dc_dk = (c_next - c_prev) / (h1 + h2);
+
+            // ∂²C/∂K² : différence centrale du 2nd ordre pour grille non-uniforme
+            let d2c_dk2 =
+                2.0 * (c_next / h2 - c_mid * (1.0 / h1 + 1.0 / h2) + c_prev / h1) / (h1 + h2);
+
+            // Formule de Dupire complète (taux ≠ 0) :
+            // σ_loc² = 2·(∂C/∂T + r·K·∂C/∂K) / (K²·∂²C/∂K²)
+            //
+            // Note : ∂C/∂K < 0 (call décroissant en K), donc r·K·∂C/∂K < 0
+            // réduit le numérateur. Sans ce terme (r=0), on suresti­me σ_loc.
+            let numerator = 2.0 * (dc_dt + r * k * dc_dk);
+            let denominator = k * k * d2c_dk2;
+
+            let sigma_loc_sq = if denominator > 1e-14 && numerator > 0.0 {
+                (numerator / denominator).min(sigma_max * sigma_max)
+            } else {
+                sigma_min * sigma_min
+            };
+
+            local_vol_data[ti * n_k_out + ki] = sigma_loc_sq.sqrt().clamp(sigma_min, sigma_max);
+        }
+    }
+
+    let local_vol = Array2::from_shape_vec((n_t_out, n_k_out), local_vol_data)
+        .map_err(|e| KontractError::InconsistentPath(e.to_string()))?;
+
+    // Grille de temps : σ_loc[ti] est estimé par différence finie sur [T_ti, T_{ti+1}].
+    // Il représente la vol locale au **milieu** `(T_ti + T_{ti+1}) / 2` (biais de
+    // l'approximation en avance). On positionne chaque jalon au milieu de son
+    // intervalle pour que l'interpolation bilinéaire converge vers le bon point.
+    // Le clamping à plat hors grille extrapolera σ_loc[0] vers t=0 et σ_loc[n-1]
+    // au-delà de la dernière maturité.
+    let time_grid: Vec<f64> = (0..n_t_out)
+        .map(|ti| 0.5 * (maturities[ti] + maturities[ti + 1]))
+        .collect();
+
+    Ok(DupireSimulator {
+        asset: asset.to_string(),
+        s0,
+        r,
+        spot_grid: strikes.to_vec(),
+        time_grid,
+        local_vol,
+    })
+}
+
+// ============================================================================
+// Utilitaires communs aux simulateurs J12
+// ============================================================================
+
+/// Trouve l'index inférieur et la fraction d'interpolation dans une grille
+/// croissante. Retourne `(index, fraction)` avec `fraction ∈ [0, 1]`.
+///
+/// Si `x` est hors grille, clamp au bord correspondant (fraction = 0 ou 1).
+fn interp_index(grid: &[f64], x: f64) -> (usize, f64) {
+    let n = grid.len();
+    if n == 0 {
+        return (0, 0.0);
+    }
+    if x <= grid[0] {
+        return (0, 0.0);
+    }
+    if x >= grid[n - 1] {
+        return (n - 1, 0.0);
+    }
+    // Recherche binaire de l'intervalle
+    let mut lo = 0usize;
+    let mut hi = n - 1;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if grid[mid] <= x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let frac = (x - grid[lo]) / (grid[hi] - grid[lo]);
+    (lo, frac.clamp(0.0, 1.0))
 }
