@@ -40,6 +40,9 @@ pub use variance_reduction::VarianceReductionConfig;
 pub mod sobol_simulator; // J16
 pub use sobol_simulator::{SobolGbm, SobolSimulator};
 
+pub mod lsm; // J17
+pub use lsm::{price_american_lsm, LsmConfig};
+
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 

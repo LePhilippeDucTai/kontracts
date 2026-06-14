@@ -3,9 +3,6 @@
 //! Low-discrepancy RNG for O(1/N) convergence instead of O(1/√N) standard MC.
 
 use ndarray::Array2;
-use rand::Rng;
-use rand_chacha::ChaCha8Rng;
-use rand_distr::StandardNormal;
 use rayon::prelude::*;
 
 use crate::observable::Path;
@@ -17,7 +14,7 @@ fn u01_to_normal(u: f64) -> f64 {
     const A1: f64 = -3.969_683_028_665_376_e1;
     const A2: f64 = 2.221_213_436_479_055_e2;
     const A3: f64 = -2.788_365_947_450_5e2;
-    const A4: f64 = -4.204_6127_e0;
+    const A4: f64 = -4.204_612_7_e0;
     const B1: f64 = -5.447_609_879_822_406_e1;
     const B2: f64 = 1.615_858_368_580_409_e2;
     const B3: f64 = -1.556_989_798_598_866_e2;
@@ -34,17 +31,17 @@ fn u01_to_normal(u: f64) -> f64 {
 
     if u < P_LOW {
         let q = (2.0 * std::f64::consts::PI * u).sqrt();
-        (((((A4 * q + A3) * q + A2) * q + A1) * q + 1.0)
-            / (((((B4 * q + B3) * q + B2) * q + B1) * q + 1.0)))
+        ((((A4 * q + A3) * q + A2) * q + A1) * q + 1.0)
+            / ((((B4 * q + B3) * q + B2) * q + B1) * q + 1.0)
     } else if u <= P_HIGH {
         let q = u - 0.5;
         let r = q * q;
-        (((((C4 * r + C3) * r + C2) * r + C1) * r + q)
-            / (((((D3 * r + D2) * r + D1) * r + 1.0) * r + 1.0)))
+        ((((C4 * r + C3) * r + C2) * r + C1) * r + q)
+            / ((((D3 * r + D2) * r + D1) * r + 1.0) * r + 1.0)
     } else {
         let q = (2.0 * std::f64::consts::PI * (1.0 - u)).sqrt();
         -(((((A4 * q + A3) * q + A2) * q + A1) * q + 1.0)
-            / (((((B4 * q + B3) * q + B2) * q + B1) * q + 1.0)))
+            / ((((B4 * q + B3) * q + B2) * q + B1) * q + 1.0))
     }
 }
 
@@ -87,8 +84,7 @@ fn sobol_normal_matrix(n_paths: usize, n_steps: usize) -> Array2<f64> {
         }
     }
 
-    Array2::from_shape_vec((n_paths, n_steps), data)
-        .expect("Sobol matrix shape mismatch")
+    Array2::from_shape_vec((n_paths, n_steps), data).expect("Sobol matrix shape mismatch")
 }
 
 /// Generic Sobol-based simulator wrapper.

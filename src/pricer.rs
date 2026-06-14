@@ -339,6 +339,18 @@ fn present_value(
 
 /// Réduit un contrat en flux `(montant, index_de_date)` le long d'une trajectoire.
 ///
+/// Exposé `pub(crate)` pour le pricing américain LSM (jalon J17), qui réduit le
+/// payoff exercé à une date donnée en flux puis les actualise jusqu'à cette date.
+pub(crate) fn cashflows_pub(
+    contract: &Contract,
+    t_idx: usize,
+    path: &Path,
+) -> Result<Vec<(f64, usize)>, KontractError> {
+    cashflows(contract, t_idx, path)
+}
+
+/// Réduit un contrat en flux `(montant, index_de_date)` le long d'une trajectoire.
+///
 /// `t_idx` est l'index de la **date d'acquisition courante** du sous-contrat.
 /// Les dates sont des index dans la grille de `path` ; l'actualisation est
 /// appliquée par [`present_value`].
