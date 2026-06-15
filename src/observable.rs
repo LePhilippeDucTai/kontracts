@@ -100,6 +100,44 @@ impl Observable {
             Observable::Div(a, b) => Ok(a.eval(path, t)? / b.eval(path, t)?),
             Observable::Max(a, b) => Ok(a.eval(path, t)?.max(b.eval(path, t)?)),
             Observable::Min(a, b) => Ok(a.eval(path, t)?.min(b.eval(path, t)?)),
+            Observable::Average {
+                obs,
+                from_year,
+                to_year,
+            } => {
+                // t_now doubles as a bounds-check for t even when to_year is Some.
+                let t_now = *path
+                    .times()
+                    .get(t)
+                    .ok_or(KontractError::StepOutOfRange(t))?;
+                let t_from = from_year.unwrap_or(0.0);
+                let t_to = to_year.unwrap_or(t_now);
+                if t_from > t_to + 1e-12 {
+                    return Err(KontractError::MalformedContract(format!(
+                        "fenêtre moyenne invalide : from {t_from} > to {t_to}"
+                    )));
+                }
+                let vals: Result<Vec<f64>, _> = path
+                    .times()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &ti)| ti >= t_from - 1e-12 && ti <= t_to + 1e-12)
+                    .map(|(i, _)| obs.eval(path, i))
+                    .collect();
+                let vals = vals?;
+                if vals.is_empty() {
+                    return Err(KontractError::MalformedContract(format!(
+                        "fenêtre moyenne vide : [{from_year:?}, {to_year:?}]"
+                    )));
+                }
+                Ok(vals.iter().sum::<f64>() / vals.len() as f64)
+            }
+            Observable::RunningMax(obs) => (0..=t)
+                .map(|i| obs.eval(path, i))
+                .try_fold(f64::NEG_INFINITY, |acc, v| v.map(|x| acc.max(x))),
+            Observable::RunningMin(obs) => (0..=t)
+                .map(|i| obs.eval(path, i))
+                .try_fold(f64::INFINITY, |acc, v| v.map(|x| acc.min(x))),
         }
     }
 }
