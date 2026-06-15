@@ -37,19 +37,28 @@ pub struct GreekSurface {
 impl GreekSurface {
     /// Exporte une matrice au format CSV (entête `spot\vol`, valeurs tabulées).
     pub fn to_csv(&self, quantity: &Array2<f64>) -> String {
-        let mut out = String::from("spot\\vol");
-        for v in &self.vols {
-            out.push_str(&format!(",{v}"));
-        }
-        out.push('\n');
-        for (i, s) in self.spots.iter().enumerate() {
-            out.push_str(&format!("{s}"));
-            for (j, _) in self.vols.iter().enumerate() {
-                out.push_str(&format!(",{}", quantity[[i, j]]));
-            }
-            out.push('\n');
-        }
-        out
+        let header = {
+            let vols_str = self
+                .vols
+                .iter()
+                .map(|v| format!(",{v}"))
+                .collect::<String>();
+            format!("spot\\vol{}\n", vols_str)
+        };
+
+        let rows = self
+            .spots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let vals = (0..self.vols.len())
+                    .map(|j| format!(",{}", quantity[[i, j]]))
+                    .collect::<String>();
+                format!("{s}{}\n", vals)
+            })
+            .collect::<String>();
+
+        format!("{header}{rows}")
     }
 
     /// Rend une matrice en image grayscale PGM (P2 ASCII), normalisée min→max.
@@ -58,31 +67,33 @@ impl GreekSurface {
     /// navigateur, conversion ImageMagick…).
     pub fn to_pgm(&self, quantity: &Array2<f64>) -> String {
         let (rows, cols) = quantity.dim();
-        let mut lo = f64::INFINITY;
-        let mut hi = f64::NEG_INFINITY;
-        for &x in quantity.iter() {
-            if x < lo {
-                lo = x;
-            }
-            if x > hi {
-                hi = x;
-            }
-        }
+
+        // Calcule min/max avec fold
+        let (lo, hi) = quantity.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(acc_lo, acc_hi), &x| (acc_lo.min(x), acc_hi.max(x)),
+        );
+
         let span = if (hi - lo).abs() < 1e-300 {
             1.0
         } else {
             hi - lo
         };
 
-        let mut out = format!("P2\n{cols} {rows}\n255\n");
-        for i in 0..rows {
-            for j in 0..cols {
-                let g = (((quantity[[i, j]] - lo) / span) * 255.0).round() as i32;
-                out.push_str(&format!("{} ", g.clamp(0, 255)));
-            }
-            out.push('\n');
-        }
-        out
+        let header = format!("P2\n{cols} {rows}\n255\n");
+        let lines: String = (0..rows)
+            .map(|i| {
+                (0..cols)
+                    .map(|j| {
+                        let g = (((quantity[[i, j]] - lo) / span) * 255.0).round() as i32;
+                        format!("{} ", g.clamp(0, 255))
+                    })
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+
+        format!("{header}{lines}")
     }
 }
 
@@ -114,25 +125,14 @@ pub fn greek_surface(
         })
         .collect::<Result<Vec<_>, KontractError>>()?;
 
-    let mut price = vec![0.0; ns * nv];
-    let mut delta = vec![0.0; ns * nv];
-    let mut gamma = vec![0.0; ns * nv];
-    let mut vega = vec![0.0; ns * nv];
-    for (idx, g) in cells.into_iter().enumerate() {
-        price[idx] = g.price;
-        delta[idx] = g.delta;
-        gamma[idx] = g.gamma;
-        vega[idx] = g.vega;
-    }
-
     let to_arr = |v: Vec<f64>| Array2::from_shape_vec((ns, nv), v).expect("dimensions cohérentes");
 
     Ok(GreekSurface {
         spots: spots.to_vec(),
         vols: vols.to_vec(),
-        price: to_arr(price),
-        delta: to_arr(delta),
-        gamma: to_arr(gamma),
-        vega: to_arr(vega),
+        price: to_arr(cells.iter().map(|g| g.price).collect()),
+        delta: to_arr(cells.iter().map(|g| g.delta).collect()),
+        gamma: to_arr(cells.iter().map(|g| g.gamma).collect()),
+        vega: to_arr(cells.iter().map(|g| g.vega).collect()),
     })
 }
