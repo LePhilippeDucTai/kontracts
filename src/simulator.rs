@@ -217,6 +217,8 @@ impl Gbm {
                 let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
                 let mut s = self.s0;
                 let mut prev_t = 0.0_f64;
+                // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+                // Récurrence GBM : `s` dépend du pas précédent (séquentiel par path).
                 for (k, &t) in times.iter().enumerate() {
                     let dt = t - prev_t;
                     if dt > 0.0 {
@@ -324,9 +326,6 @@ impl Simulator for Gbm {
         let dt_c = if coarse { t_max / n_coarse as f64 } else { 0.0 };
         let drift_c = (self.mu - 0.5 * self.sigma * self.sigma) * dt_c;
 
-        let mut fine = Vec::with_capacity(n_paths);
-        let mut coarse_paths = Vec::with_capacity(n_paths);
-
         // Génération séquentielle des aléas par trajectoire (seed dérivée de
         // (seed, level, index)), parallélisée ensuite si nécessaire. Ici on reste
         // simple : une trajectoire par boucle (le pricer parallélise déjà).
@@ -341,6 +340,8 @@ impl Simulator for Gbm {
                 row_f[0] = s_f;
                 // On mémorise les incréments fins pour reconstruire le grossier.
                 let mut incs = vec![0.0f64; n_fine];
+                // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+                // Récurrence GBM fine : `s_f` dépend du pas précédent (séquentiel).
                 for k in 0..n_fine {
                     let z: f64 = rng.sample(StandardNormal);
                     incs[k] = z;
@@ -354,6 +355,8 @@ impl Simulator for Gbm {
                     let mut row_c = vec![0.0f64; coarse_grid.len()];
                     let mut s_c = self.s0;
                     row_c[0] = s_c;
+                    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+                    // Récurrence GBM grossière : `s_c` dépend du pas précédent.
                     for j in 0..n_coarse {
                         let dw = incs[2 * j] + incs[2 * j + 1]; // ~ N(0, 2)
                                                                 // diffusion = σ·√dt_f·dW (car dW porte déjà 2 pas de √dt_f)
@@ -369,13 +372,22 @@ impl Simulator for Gbm {
             })
             .collect();
 
-        for (row_f, row_c) in rows {
-            fine.push(Path::new(fine_grid.clone()).with_asset(self.asset.clone(), row_f)?);
-            if coarse {
-                coarse_paths
-                    .push(Path::new(coarse_grid.clone()).with_asset(self.asset.clone(), row_c)?);
-            }
-        }
+        // Construction immutable des Path fins (toujours) et grossiers (si `coarse`).
+        let fine: Vec<Path> = rows
+            .iter()
+            .map(|(row_f, _)| {
+                Path::new(fine_grid.clone()).with_asset(self.asset.clone(), row_f.clone())
+            })
+            .collect::<Result<Vec<Path>, KontractError>>()?;
+        let coarse_paths: Vec<Path> = if coarse {
+            rows.iter()
+                .map(|(_, row_c)| {
+                    Path::new(coarse_grid.clone()).with_asset(self.asset.clone(), row_c.clone())
+                })
+                .collect::<Result<Vec<Path>, KontractError>>()?
+        } else {
+            Vec::new()
+        };
 
         Ok(Some((fine, coarse_paths)))
     }
@@ -386,16 +398,17 @@ fn validate_grid(times: &[f64]) -> Result<(), KontractError> {
     if times.is_empty() {
         return Err(KontractError::InconsistentPath("grille vide".into()));
     }
-    let mut prev = 0.0_f64;
-    for &t in times {
-        if t < prev {
-            return Err(KontractError::InconsistentPath(format!(
+    // Décroissance par rapport à 0.0 puis à la valeur précédente : on chaîne 0.0
+    // devant la grille et on cherche la première paire (prev, t) décroissante.
+    std::iter::once(0.0_f64)
+        .chain(times.iter().copied())
+        .zip(times.iter().copied())
+        .find(|&(prev, t)| t < prev)
+        .map_or(Ok(()), |(_, t)| {
+            Err(KontractError::InconsistentPath(format!(
                 "grille non croissante au voisinage de {t}"
-            )));
-        }
-        prev = t;
-    }
-    Ok(())
+            )))
+        })
 }
 
 /// Mélange (seed, index) en une graine bien décorrélée (constante de SplitMix64).
@@ -483,6 +496,8 @@ impl HestonSimulator {
         let mut v = self.v0.max(0.0);
         let mut prev_t = 0.0_f64;
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+        // Récurrence Heston Euler-Milstein : `s` et `v` dépendent du pas précédent.
         for (k, &t) in times.iter().enumerate() {
             let dt = t - prev_t;
             if dt > 0.0 {
@@ -582,6 +597,8 @@ impl Simulator for HestonSimulator {
             let mut s = self.s0;
             let mut v = self.v0.max(0.0);
             row[0] = s;
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+            // Récurrence Heston Euler-Milstein : `s` et `v` dépendent du pas précédent.
             for (step, &(z1, z2)) in incs.iter().enumerate() {
                 let sqrt_v = v.sqrt();
                 let dw_s = z1 * sqrt_dt;
@@ -600,24 +617,27 @@ impl Simulator for HestonSimulator {
                 let mut rng = ChaCha8Rng::seed_from_u64(mix(mix(seed, level as u64 + 1), i as u64));
 
                 // Incréments fins en N(0,1) ; le pas fin les met à l'échelle √dt_f.
-                let mut incs_f = Vec::with_capacity(n_fine);
-                for _ in 0..n_fine {
-                    let z1: f64 = rng.sample(StandardNormal);
-                    let z2: f64 = rng.sample(StandardNormal);
-                    incs_f.push((z1, z2));
-                }
+                // Tirage ordonné préservé (séquence RNG identique) via un map sur 0..n_fine.
+                let incs_f: Vec<(f64, f64)> = (0..n_fine)
+                    .map(|_| {
+                        let z1: f64 = rng.sample(StandardNormal);
+                        let z2: f64 = rng.sample(StandardNormal);
+                        (z1, z2)
+                    })
+                    .collect();
                 let row_f = simulate_from_incs(&incs_f, fine_grid.len(), dt_f);
 
                 let row_c = if coarse {
                     // Pas grossier : dW couplé = (z_a + z_b)/√2 → N(0,1) à l'échelle
                     // √dt_c = √(2·dt_f), donc dW_c·√dt_c = (z_a+z_b)·√dt_f.
-                    let mut incs_c = Vec::with_capacity(n_coarse);
-                    for j in 0..n_coarse {
-                        let (z1a, z2a) = incs_f[2 * j];
-                        let (z1b, z2b) = incs_f[2 * j + 1];
-                        let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
-                        incs_c.push(((z1a + z1b) * inv_sqrt2, (z2a + z2b) * inv_sqrt2));
-                    }
+                    let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+                    let incs_c: Vec<(f64, f64)> = (0..n_coarse)
+                        .map(|j| {
+                            let (z1a, z2a) = incs_f[2 * j];
+                            let (z1b, z2b) = incs_f[2 * j + 1];
+                            ((z1a + z1b) * inv_sqrt2, (z2a + z2b) * inv_sqrt2)
+                        })
+                        .collect();
                     let dt_c = t_max / n_coarse as f64;
                     simulate_from_incs(&incs_c, coarse_grid.len(), dt_c)
                 } else {
@@ -628,15 +648,22 @@ impl Simulator for HestonSimulator {
             })
             .collect();
 
-        let mut fine = Vec::with_capacity(n_paths);
-        let mut coarse_paths = Vec::with_capacity(n_paths);
-        for (row_f, row_c) in rows {
-            fine.push(Path::new(fine_grid.clone()).with_asset(self.asset.clone(), row_f)?);
-            if coarse {
-                coarse_paths
-                    .push(Path::new(coarse_grid.clone()).with_asset(self.asset.clone(), row_c)?);
-            }
-        }
+        // Construction immutable des Path fins (toujours) et grossiers (si `coarse`).
+        let fine: Vec<Path> = rows
+            .iter()
+            .map(|(row_f, _)| {
+                Path::new(fine_grid.clone()).with_asset(self.asset.clone(), row_f.clone())
+            })
+            .collect::<Result<Vec<Path>, KontractError>>()?;
+        let coarse_paths: Vec<Path> = if coarse {
+            rows.iter()
+                .map(|(_, row_c)| {
+                    Path::new(coarse_grid.clone()).with_asset(self.asset.clone(), row_c.clone())
+                })
+                .collect::<Result<Vec<Path>, KontractError>>()?
+        } else {
+            Vec::new()
+        };
 
         Ok(Some((fine, coarse_paths)))
     }
@@ -715,6 +742,8 @@ impl DupireSimulator {
         let mut s = self.s0;
         let mut prev_t = 0.0_f64;
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+        // Récurrence Dupire Euler : `s` dépend du pas précédent (σ_loc évaluée en s).
         for (k, &t) in times.iter().enumerate() {
             let dt = t - prev_t;
             if dt > 0.0 {
@@ -842,6 +871,9 @@ pub fn dupire_from_gbm_calls(
 
     let mut local_vol_data = vec![0.0f64; n_t_out * n_k_out];
 
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+    // Différences finies 2D (Dupire) avec conditions de bord en K et T : boucles
+    // imbriquées complexes laissées en place pour la lisibilité.
     for ti in 0..n_t_out {
         let dt = maturities[ti + 1] - maturities[ti];
         for ki in 0..n_k_out {
@@ -1009,6 +1041,8 @@ impl SABRSimulator {
             row[0] = self.s0;
         }
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+        // Récurrence SABR Euler : `ln_s` et `alpha` dépendent du pas précédent.
         for (k, &t) in times.iter().enumerate() {
             let dt = t - prev_t;
             if dt > 0.0 {
@@ -1178,6 +1212,9 @@ impl MertonJumpSimulator {
         // E[J] = exp(mu_ln + sigma_j²/2) = exp(mu_j) → mu_ln = mu_j - sigma_j²/2
         let mu_ln = self.mu_j - 0.5 * self.sigma_j * self.sigma_j;
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+        // Récurrence Merton Euler + sauts de Poisson : `ln_s` dépend du pas précédent
+        // et la séquence des tirages RNG (diffusion puis sauts) doit rester ordonnée.
         for (k, &t) in times.iter().enumerate() {
             let dt = t - prev_t;
             if dt > 0.0 {
@@ -1395,6 +1432,9 @@ impl RoughBergomiSimulator {
 
         let two_h = 2.0 * self.h;
         let mut cov = vec![vec![0.0f64; m]; m];
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+        // Construction O(n²) de la covariance fBm (préalable à la Cholesky) : boucles
+        // 2D imbriquées laissées en place.
         for i in 0..m {
             for j in 0..m {
                 let s = pts[i];
@@ -1429,13 +1469,15 @@ impl RoughBergomiSimulator {
                 let z: Vec<f64> = (0..m)
                     .map(|_| rng.sample::<f64, _>(StandardNormal))
                     .collect();
-                for (ii, cell) in row.iter_mut().enumerate() {
-                    let mut acc = 0.0;
-                    for (jj, &zj) in z.iter().enumerate().take(ii + 1) {
-                        acc += chol[ii][jj] * zj;
-                    }
-                    *cell = acc;
-                }
+                // Produit matrice-vecteur triangulaire B = L·Z. L'ordre de sommation
+                // (j croissant, j ≤ i) est strictement préservé via fold → bit-à-bit.
+                row.iter_mut().enumerate().for_each(|(ii, cell)| {
+                    *cell = z
+                        .iter()
+                        .enumerate()
+                        .take(ii + 1)
+                        .fold(0.0, |acc, (jj, &zj)| acc + chol[ii][jj] * zj);
+                });
             });
         }
 
@@ -1466,16 +1508,16 @@ impl RoughBergomiSimulator {
             .map(|_| rng.sample::<f64, _>(StandardNormal))
             .collect();
 
-        // fBm aux instants strictement positifs : B = L·Z.
-        let mut fbm = vec![0.0f64; m];
-        for (i, fbm_i) in fbm.iter_mut().enumerate() {
-            let mut acc = 0.0;
-            // L est triangulaire inférieure : somme sur j ≤ i.
-            for (j, &zj) in z.iter().enumerate().take(i + 1) {
-                acc += chol[i][j] * zj;
-            }
-            *fbm_i = acc;
-        }
+        // fBm aux instants strictement positifs : B = L·Z. L triangulaire inférieure :
+        // somme sur j ≤ i. L'ordre de sommation est préservé via fold → bit-à-bit.
+        let fbm: Vec<f64> = (0..m)
+            .map(|i| {
+                z.iter()
+                    .enumerate()
+                    .take(i + 1)
+                    .fold(0.0, |acc, (j, &zj)| acc + chol[i][j] * zj)
+            })
+            .collect();
 
         let rho_perp = (1.0 - self.rho * self.rho).max(0.0).sqrt();
         let log_v0 = self.v0.max(1e-300).ln();
@@ -1488,6 +1530,9 @@ impl RoughBergomiSimulator {
         // `idx` parcourt les colonnes de `chol`/`fbm` (instants > 0).
         let mut idx = 0usize;
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+        // Récurrence Rough Bergomi : `s` dépend du pas précédent ; `idx` et le tirage
+        // RNG `z_indep` doivent rester ordonnés (séquentiel par path).
         for (k, &t) in times.iter().enumerate() {
             let dt = t - prev_t;
             if dt > 0.0 {
