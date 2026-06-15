@@ -42,6 +42,23 @@ Greeks (Δ/Γ/ν/ρ par bump-and-reprice CRN), surfaces de Greeks, DSL ergonomiq
 bindings PyO3, batch pricing (100 contrats en < 0,2 s), catalogue de produits
 validés contre des formules fermées, CI et wheels.
 
+Phases 2–4 (J11–J25) ajoutent : Heston/Dupire/SABR/Merton/Rough Bergomi,
+réduction de variance, quasi-MC (Sobol), américaines (LSM), multilevel MC,
+EDP Crank-Nicolson 1D / ADI 2D Heston (terme croisé), données de marché,
+calibration (trust-region + CMA-ES), backtesting, **taux stochastiques**
+(Vasicek/Hull-White, swaptions) et **FX** (Garman-Kohlhagen, quanto, composite).
+
+Le binding Python expose tout cela : modèles avancés, dividende, réduction de
+variance, américaines, taux, FX, produits et calibration — voir `python/`.
+
+```python
+from kontract import european_call, heston, USD
+call = european_call("AAPL", 100.0, 1.0, USD)
+res = call.price(heston(spot=100, v0=0.04, kappa=2, theta=0.04,
+                        sigma_v=0.3, rho=-0.5, r=0.05, asset="AAPL"))
+print(res.price, "±", res.std_error)
+```
+
 Auto-implémenté jalon par jalon par Claude Code. Faire avancer d'un jalon :
 commande `/loop` (ou `./.claude/skills/jalon.sh start`).
 

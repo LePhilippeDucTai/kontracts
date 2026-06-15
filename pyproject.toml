@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "kontract"
-version = "0.1.0"
+version = "0.2.0"
 description = "Une algèbre des contrats financiers, pricée par Monte-Carlo. Cœur Rust."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -16,8 +16,13 @@ classifiers = [
 ]
 dependencies = ["numpy>=1.22"]
 
+[project.urls]
+Repository = "https://github.com/LePhilippeDucTai/kontracts"
+
 [tool.maturin]
 # Active la feature `python` côté Rust lors du build de la wheel.
 features = ["python"]
 module-name = "kontract._kontract"
 python-source = "python"
+# Wheel abi3 unique (CPython ≥ 3.9) grâce à la feature `abi3-py39` de PyO3.
+
