@@ -247,51 +247,41 @@ fn black_scholes_call_simple(
 
 /// Load option quotes from a simple CSV (strike, maturity, mid_price, [bid], [ask]).
 pub fn load_csv(csv_text: &str) -> Result<Vec<OptionQuote>, KontractError> {
-    let mut quotes = vec![];
+    Ok(csv_text
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+            if parts.len() < 3 {
+                return None;
+            }
 
-    for line in csv_text.lines().skip(1) {
-        // Skip header and empty lines.
-        if line.trim().is_empty() {
-            continue;
-        }
+            let strike: f64 = parts[0].parse().ok()?;
+            let maturity: f64 = parts[1].parse().ok()?;
+            let mid_price: f64 = parts[2].parse().ok()?;
 
-        let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-        if parts.len() < 3 {
-            continue;
-        }
+            let bid_price = if parts.len() > 3 {
+                parts[3].parse().ok()
+            } else {
+                None
+            };
 
-        let strike: f64 = parts[0]
-            .parse()
-            .map_err(|_| KontractError::InconsistentPath("Failed to parse strike".into()))?;
-        let maturity: f64 = parts[1]
-            .parse()
-            .map_err(|_| KontractError::InconsistentPath("Failed to parse maturity".into()))?;
-        let mid_price: f64 = parts[2]
-            .parse()
-            .map_err(|_| KontractError::InconsistentPath("Failed to parse mid_price".into()))?;
+            let ask_price = if parts.len() > 4 {
+                parts[4].parse().ok()
+            } else {
+                None
+            };
 
-        let bid_price = if parts.len() > 3 {
-            parts[3].parse().ok()
-        } else {
-            None
-        };
-
-        let ask_price = if parts.len() > 4 {
-            parts[4].parse().ok()
-        } else {
-            None
-        };
-
-        quotes.push(OptionQuote {
-            strike,
-            maturity,
-            mid_price,
-            bid_price,
-            ask_price,
-        });
-    }
-
-    Ok(quotes)
+            Some(OptionQuote {
+                strike,
+                maturity,
+                mid_price,
+                bid_price,
+                ask_price,
+            })
+        })
+        .collect())
 }
 
 /// Build a volatility surface from option quotes.
@@ -301,19 +291,20 @@ pub fn build_surface(
     rate: f64,
     dividend_yield: f64,
 ) -> Result<VolatilitySurface, KontractError> {
-    let mut surface = VolatilitySurface::new(spot, rate, dividend_yield);
+    let initial_surface = VolatilitySurface::new(spot, rate, dividend_yield);
 
-    for quote in quotes {
-        let iv = implied_volatility(
-            quote.mid_price,
-            spot,
-            quote.strike,
-            quote.maturity,
-            rate,
-            dividend_yield,
-        )?;
-        surface.add_point(quote.strike, quote.maturity, iv);
-    }
-
-    Ok(surface)
+    quotes
+        .into_iter()
+        .try_fold(initial_surface, |mut surface, quote| {
+            let iv = implied_volatility(
+                quote.mid_price,
+                spot,
+                quote.strike,
+                quote.maturity,
+                rate,
+                dividend_yield,
+            )?;
+            surface.add_point(quote.strike, quote.maturity, iv);
+            Ok(surface)
+        })
 }
