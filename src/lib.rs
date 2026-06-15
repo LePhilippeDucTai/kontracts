@@ -56,9 +56,13 @@ pub use market_data::{
     build_surface, implied_volatility, load_csv, OptionQuote, VolatilitySurface,
 };
 
-pub mod calibration; // J21-fast
+pub mod optimizer; // J22
+pub use optimizer::{cmaes_minimize, Bounds, CmaesConfig, OptimizeResult};
+
+pub mod calibration; // J21-fast, J22
 pub use calibration::{
-    fit_gbm_volatility, fit_heston_parameters, CalibrationResult, FastCalibrationConfig,
+    calibrate_heston_cmaes, calibrate_merton_cmaes, calibrate_sabr_cmaes, fit_gbm_volatility,
+    fit_heston_parameters, CalibrationResult, FastCalibrationConfig,
 };
 
 pub mod greeks; // J7
