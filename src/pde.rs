@@ -1,4 +1,14 @@
 //! Crank-Nicolson 1D PDE Solver (jalon J19).
+//!
+//! Schéma Crank-Nicolson (θ = ½, ordre 2 en temps et espace) de l'EDP de
+//! Black-Scholes, résolu en marche arrière depuis le payoff terminal. Conditions
+//! aux limites de **linéarité** (Γ = ∂²V/∂S² = 0), exactes pour les payoffs
+//! vanille linéaires dans les ailes (call/put).
+//!
+//! **Limite assumée** : la condition Γ = 0 suppose un payoff *linéaire aux bords*
+//! du domaine `[s_min, s_max]`. Pour un payoff à courbure au bord (p.ex. un
+//! butterfly chevauchant `s_max`), élargir le domaine ou repasser à un Dirichlet
+//! analytique.
 
 use crate::numerics;
 use crate::KontractError;
@@ -51,9 +61,9 @@ pub struct PdeSolver {
 
 impl PdeSolver {
     pub fn new(cfg: PdeConfig) -> Result<Self, KontractError> {
-        if cfg.n_space < 3 {
+        if cfg.n_space < 4 {
             return Err(KontractError::MalformedContract(
-                "n_space must be >= 3".to_string(),
+                "n_space must be >= 4".to_string(),
             ));
         }
         if cfg.n_time < 1 {
@@ -89,21 +99,39 @@ impl PdeSolver {
         let r = cfg.rate;
         let q = cfg.dividend_yield;
         let sigma = cfg.sigma;
+        // Coefficients Crank-Nicolson (θ = ½) de l'EDP de Black-Scholes :
+        //   αᵢ = ¼Δt(σ²jᵢ² − (r−q)jᵢ),  βᵢ = −½Δt(σ²jᵢ² + r),  γᵢ = ¼Δt(σ²jᵢ² + (r−q)jᵢ)
+        // avec jᵢ = Sᵢ/ΔS. Implicite : aᵢ = −αᵢ, bᵢ = 1−βᵢ, cᵢ = −γᵢ.
         let drift_factor = 0.25 * dt * (r - q);
-        let diff_factor = 0.5 * dt * sigma * sigma;
+        let diff_factor = 0.25 * dt * sigma * sigma;
         let rate_coef = 0.5 * dt * r;
 
         // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for i in 1..n - 1 {
             let si = space_grid[i];
             let s_factor = si / dx;
-            let drift_coef = drift_factor * s_factor;
-            let diff_coef = diff_factor * s_factor * s_factor;
+            let drift_coef = drift_factor * s_factor; // ¼Δt(r−q)jᵢ
+            let diff_coef = diff_factor * s_factor * s_factor; // ¼Δtσ²jᵢ²
 
-            coeff_a[i] = -diff_coef - drift_coef;
+            // aᵢ = −αᵢ = −(diff − drift) ; cᵢ = −γᵢ = −(diff + drift).
+            coeff_a[i] = -diff_coef + drift_coef;
             coeff_b[i] = 1.0 + 2.0 * diff_coef + rate_coef;
-            coeff_c[i] = -diff_coef + drift_coef;
+            coeff_c[i] = -diff_coef - drift_coef;
         }
+
+        // Condition aux limites de **linéarité** (Γ = ∂²V/∂S² = 0 aux bords),
+        // exacte pour les payoffs vanille (call/put linéaires loin de la monnaie)
+        // et agnostique au produit. On élimine V₀ = 2V₁ − V₂ et
+        // V_{n−1} = 2V_{n−2} − V_{n−3} en les repliant dans les lignes interne 1 et
+        // n−2 (préserve la structure tridiagonale), les lignes 0 et n−1 devenant
+        // triviales — les valeurs aux bords sont reconstruites par extrapolation
+        // après résolution. Remplace l'ancien gel de Dirichlet (source d'erreur).
+        coeff_b[1] += 2.0 * coeff_a[1];
+        coeff_c[1] -= coeff_a[1];
+        coeff_a[1] = 0.0;
+        coeff_b[n - 2] += 2.0 * coeff_c[n - 2];
+        coeff_a[n - 2] -= coeff_c[n - 2];
+        coeff_c[n - 2] = 0.0;
 
         Ok(PdeSolver {
             cfg,
@@ -180,13 +208,14 @@ impl PdeSolver {
 
         let mut rhs = Array1::zeros(n);
 
-        // Boundary conditions
-        rhs[0] = v_old[0];
-        rhs[n - 1] = v_old[n - 1];
+        // Lignes de bord triviales (la valeur y est reconstruite par linéarité
+        // après résolution — cf. repliement dans `new`).
+        rhs[0] = 0.0;
+        rhs[n - 1] = 0.0;
 
-        // Compute RHS using pre-calculated coefficients
+        // Membre de droite explicite (θ = ½) : +αᵢ V_{i−1} + (1+βᵢ) Vᵢ + γᵢ V_{i+1}.
         let drift_factor = 0.25 * dt * (r - q);
-        let diff_factor = 0.5 * dt * sigma * sigma;
+        let diff_factor = 0.25 * dt * sigma * sigma;
         let rate_coef = 0.5 * dt * r;
 
         // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
@@ -218,6 +247,9 @@ impl PdeSolver {
                     res_max = res_max.max((v_proj - v_new[i]).abs());
                     v_new[i] += self.cfg.sor_omega * (v_proj - v_new[i]);
                 }
+                // Bords par linéarité (Γ = 0) à chaque balayage.
+                v_new[0] = 2.0 * v_new[1] - v_new[2];
+                v_new[n - 1] = 2.0 * v_new[n - 2] - v_new[n - 3];
 
                 if res_max < self.cfg.psor_tolerance {
                     break;
@@ -225,7 +257,11 @@ impl PdeSolver {
             }
             Ok(v_new)
         } else {
-            self.thomas(&self.coeff_a, &self.coeff_b, &self.coeff_c, &rhs)
+            let mut v_new = self.thomas(&self.coeff_a, &self.coeff_b, &self.coeff_c, &rhs)?;
+            // Reconstruction des bords par linéarité (Γ = 0).
+            v_new[0] = 2.0 * v_new[1] - v_new[2];
+            v_new[n - 1] = 2.0 * v_new[n - 2] - v_new[n - 3];
+            Ok(v_new)
         }
     }
 
@@ -292,7 +328,7 @@ mod tests {
             bs_val,
             error * 100.0
         );
-        assert!(error < 0.15, "Error: {:.2}%", error * 100.0);
+        assert!(error < 0.005, "Error: {:.2}%", error * 100.0);
     }
 
     #[test]

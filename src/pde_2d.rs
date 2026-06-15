@@ -1,8 +1,18 @@
 //! Alternating Direction Implicit (ADI) 2D PDE Solver (jalon J20).
 //!
-//! Solves 2D Black-Scholes PDEs via ADI splitting:
-//! - Heston model: PDE in (S, v) space
-//! - 2-asset correlation: PDE in (S1, S2) space
+//! Résout l'EDP de Heston 2D `(S, v)` par **schéma de Douglas** (θ = ½) : un
+//! prédicteur d'Euler explicite (opérateur complet, terme croisé inclus) suivi de
+//! deux corrections implicites unidirectionnelles (balayages S puis v),
+//! tridiagonales (Thomas). Le terme croisé `ρσvS·∂²V/∂S∂v` est traité
+//! **explicitement** (stencil central 4 points).
+//!
+//! **Limites assumées** (documentées suite à la revue Opus) :
+//! - le terme croisé explicite rend le schéma *conditionnellement* stable
+//!   (restriction de type CFL) : valable pour les grilles testées (|ρ| ≤ 0.5,
+//!   σ ≤ 0.3), à raffiner si `|ρ|` est proche de 1 ou la grille `v` grossière ;
+//! - la convection `κ(θ−v)V_v` près de `v_min` n'est pas *upwindée* : pour des
+//!   régimes `v` faible / `κ` élevé (calibration extrême), un schéma upwind
+//!   durcirait la monotonie. `v_min > 0` évite la dégénérescence en `v = 0`.
 
 use crate::numerics;
 use crate::KontractError;
@@ -25,6 +35,9 @@ pub struct Pde2dConfig {
     pub kappa: f64,
     /// For Heston: long-term variance; unused for 2-asset
     pub theta: f64,
+    /// Spot/variance correlation `ρ` (Heston leverage). Drives the mixed
+    /// derivative `ρσvS·∂²V/∂S∂v`, traité explicitement dans le schéma de Douglas.
+    pub rho: f64,
     /// Time to maturity
     pub maturity: f64,
     /// Number of S-space grid points
@@ -51,6 +64,7 @@ impl Default for Pde2dConfig {
             vol_second: 0.3,
             kappa: 2.0,
             theta: 0.04,
+            rho: -0.5,
             maturity: 1.0,
             n_space_s: 100,
             n_space_v: 100,
@@ -76,9 +90,9 @@ pub struct Pde2dSolver {
 impl Pde2dSolver {
     /// Create a new 2D PDE solver.
     pub fn new(cfg: Pde2dConfig) -> Result<Self, KontractError> {
-        if cfg.n_space_s < 3 || cfg.n_space_v < 3 {
+        if cfg.n_space_s < 4 || cfg.n_space_v < 4 {
             return Err(KontractError::MalformedContract(
-                "n_space_s and n_space_v must be >= 3".to_string(),
+                "n_space_s and n_space_v must be >= 4".to_string(),
             ));
         }
         if cfg.n_time < 1 {
@@ -123,7 +137,16 @@ impl Pde2dSolver {
         })
     }
 
-    /// Solve Heston option pricing via ADI.
+    /// Price une option Heston par **schéma de Douglas ADI** (θ = ½), avec terme
+    /// croisé `ρσvS·∂²V/∂S∂v` traité **explicitement** :
+    ///
+    /// ```text
+    /// Y0 = V + Δt·A·V                    (Euler explicite, opérateur complet)
+    /// (I − θΔt·A_S) Y1 = Y0 − θΔt·A_S·V  (correction implicite en S)
+    /// (I − θΔt·A_v) V' = Y1 − θΔt·A_v·V  (correction implicite en v)
+    /// ```
+    /// où `A = A_S + A_v + A_mixte`, le terme de discount `−rV` est réparti pour
+    /// moitié dans `A_S` et `A_v`. Conditions aux bords par linéarité (Γ = 0).
     pub fn solve_heston<F>(&self, payoff_fn: F) -> Result<Array2<f64>, KontractError>
     where
         F: Fn(f64, f64) -> f64,
@@ -132,146 +155,180 @@ impl Pde2dSolver {
         let nv = self.cfg.n_space_v;
         let nt = self.cfg.n_time;
 
-        let mut v = Array2::zeros((ns, nv));
+        // Condition terminale : payoff sur toute la grille.
+        let mut v =
+            Array2::from_shape_fn((ns, nv), |(i, j)| payoff_fn(self.s_grid[i], self.v_grid[j]));
 
-        // Terminal condition: payoff at all grid points
-        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
-        for i in 0..ns {
-            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
-            for j in 0..nv {
-                v[[i, j]] = payoff_fn(self.s_grid[i], self.v_grid[j]);
-            }
-        }
-
-        // Backward time-stepping via ADI
-        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+        // noyau numérique : marche arrière en temps (récurrence).
         for _ in 0..nt {
-            // S-sweep: solve along S direction
-            v = self.adi_s_sweep(&v)?;
-            // v-sweep: solve along v direction
-            v = self.adi_v_sweep(&v)?;
+            let a_s = self.apply_s(&v);
+            let a_v = self.apply_v(&v);
+            let a_mix = self.apply_mixed(&v);
+
+            // Y0 = V + Δt (A_S + A_v + A_mixte) V.
+            let y0 = Array2::from_shape_fn((ns, nv), |(i, j)| {
+                v[[i, j]] + self.dt * (a_s[[i, j]] + a_v[[i, j]] + a_mix[[i, j]])
+            });
+
+            // Correction implicite S : (I − θΔt A_S) Y1 = Y0 − θΔt A_S V.
+            let theta = 0.5;
+            let rhs_s = Array2::from_shape_fn((ns, nv), |(i, j)| {
+                y0[[i, j]] - theta * self.dt * a_s[[i, j]]
+            });
+            let y1 = self.solve_s_implicit(&rhs_s, theta)?;
+
+            // Correction implicite v : (I − θΔt A_v) V' = Y1 − θΔt A_v V.
+            let rhs_v = Array2::from_shape_fn((ns, nv), |(i, j)| {
+                y1[[i, j]] - theta * self.dt * a_v[[i, j]]
+            });
+            v = self.solve_v_implicit(&rhs_v, theta)?;
         }
 
         Ok(v)
     }
 
-    /// ADI S-direction sweep (solve tridiagonal systems along S).
-    fn adi_s_sweep(&self, v_old: &Array2<f64>) -> Result<Array2<f64>, KontractError> {
-        let ns = self.cfg.n_space_s;
-        let nv = self.cfg.n_space_v;
-        let ds = self.ds;
-        let dv = self.dv;
-        let dt = self.dt;
-        let r = self.cfg.rate;
-        let q = self.cfg.dividend_yield;
-        let sigma = self.cfg.vol_second; // vol of vol or vol of S2
-        let _kappa = self.cfg.kappa;
-        let _theta = self.cfg.theta;
+    /// Opérateur S : `½vS²V_SS + (r−q)S V_S − ½rV` (intérieur ; 0 aux bords).
+    fn apply_s(&self, v: &Array2<f64>) -> Array2<f64> {
+        let (ns, nv) = (self.cfg.n_space_s, self.cfg.n_space_v);
+        let (ds, r, q) = (self.ds, self.cfg.rate, self.cfg.dividend_yield);
+        let mut out = Array2::zeros((ns, nv));
+        // noyau numérique : stencils différences finies.
+        for i in 1..ns - 1 {
+            let si = self.s_grid[i];
+            for j in 0..nv {
+                let vj = self.v_grid[j];
+                let v_ss = (v[[i + 1, j]] - 2.0 * v[[i, j]] + v[[i - 1, j]]) / (ds * ds);
+                let v_s = (v[[i + 1, j]] - v[[i - 1, j]]) / (2.0 * ds);
+                out[[i, j]] = 0.5 * vj * si * si * v_ss + (r - q) * si * v_s - 0.5 * r * v[[i, j]];
+            }
+        }
+        out
+    }
 
-        let mut v_new = Array2::zeros((ns, nv));
+    /// Opérateur v : `½σ²v V_vv + κ(θ−v) V_v − ½rV` (intérieur ; 0 aux bords).
+    fn apply_v(&self, v: &Array2<f64>) -> Array2<f64> {
+        let (ns, nv) = (self.cfg.n_space_s, self.cfg.n_space_v);
+        let (dv, r) = (self.dv, self.cfg.rate);
+        let (sigma, kappa, theta) = (self.cfg.vol_second, self.cfg.kappa, self.cfg.theta);
+        let mut out = Array2::zeros((ns, nv));
+        // noyau numérique : stencils différences finies.
+        for j in 1..nv - 1 {
+            let vj = self.v_grid[j];
+            for i in 0..ns {
+                let v_vv = (v[[i, j + 1]] - 2.0 * v[[i, j]] + v[[i, j - 1]]) / (dv * dv);
+                let v_v = (v[[i, j + 1]] - v[[i, j - 1]]) / (2.0 * dv);
+                out[[i, j]] = 0.5 * sigma * sigma * vj * v_vv + kappa * (theta - vj) * v_v
+                    - 0.5 * r * v[[i, j]];
+            }
+        }
+        out
+    }
 
-        // For each v-line, solve a tridiagonal S-system
-        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+    /// Terme croisé `ρσvS·∂²V/∂S∂v` (stencil central 4 points), explicite.
+    fn apply_mixed(&self, v: &Array2<f64>) -> Array2<f64> {
+        let (ns, nv) = (self.cfg.n_space_s, self.cfg.n_space_v);
+        let (ds, dv) = (self.ds, self.dv);
+        let (rho, sigma) = (self.cfg.rho, self.cfg.vol_second);
+        let mut out = Array2::zeros((ns, nv));
+        // noyau numérique : stencil mixte central.
+        for i in 1..ns - 1 {
+            let si = self.s_grid[i];
+            for j in 1..nv - 1 {
+                let vj = self.v_grid[j];
+                let v_sv = (v[[i + 1, j + 1]] - v[[i + 1, j - 1]] - v[[i - 1, j + 1]]
+                    + v[[i - 1, j - 1]])
+                    / (4.0 * ds * dv);
+                out[[i, j]] = rho * sigma * vj * si * v_sv;
+            }
+        }
+        out
+    }
+
+    /// Résout `(I − θΔt A_S) X = rhs` colonne par colonne (tridiagonal en S),
+    /// condition de bord par linéarité (Γ = 0) repliée dans le système.
+    fn solve_s_implicit(
+        &self,
+        rhs: &Array2<f64>,
+        theta: f64,
+    ) -> Result<Array2<f64>, KontractError> {
+        let (ns, nv) = (self.cfg.n_space_s, self.cfg.n_space_v);
+        let (ds, dt, r, q) = (self.ds, self.dt, self.cfg.rate, self.cfg.dividend_yield);
+        let mut out = Array2::zeros((ns, nv));
+        // noyau numérique : un système tridiagonal par colonne v.
         for j in 0..nv {
             let vj = self.v_grid[j];
-
             let mut a = vec![0.0; ns];
             let mut b = vec![1.0; ns];
             let mut c = vec![0.0; ns];
-            let mut rhs = vec![0.0; ns];
-
-            // Boundary conditions
-            rhs[0] = v_old[[0, j]];
-            rhs[ns - 1] = v_old[[ns - 1, j]];
-
-            // Interior points
-            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+            let mut d = vec![0.0; ns];
             for i in 1..ns - 1 {
                 let si = self.s_grid[i];
-
-                // ADI coefficients for S-sweep in Heston
-                let drift_s = 0.25 * dt * (r - q) * si / ds;
-                let diff_s = 0.5 * dt * vj * si * si / (ds * ds);
-                let _corr = 0.25 * dt * sigma * _kappa * si / (ds * dv); // cross-term approximation
-
-                // Implicit LHS (S-sweep, v held fixed)
-                a[i] = -diff_s - drift_s;
-                b[i] = 1.0 + 2.0 * diff_s + 0.5 * dt * r;
-                c[i] = -diff_s + drift_s;
-
-                // Explicit RHS (uses v_old, cross-terms simplified)
-                rhs[i] = (diff_s - drift_s) * v_old[[i - 1, j]]
-                    + (1.0 - 2.0 * diff_s - 0.5 * dt * r) * v_old[[i, j]]
-                    + (diff_s + drift_s) * v_old[[i + 1, j]];
+                let ds2 = 0.5 * vj * si * si / (ds * ds);
+                let drs = (r - q) * si / (2.0 * ds);
+                a[i] = -theta * dt * (ds2 - drs);
+                b[i] = 1.0 + theta * dt * (2.0 * ds2 + 0.5 * r);
+                c[i] = -theta * dt * (ds2 + drs);
+                d[i] = rhs[[i, j]];
             }
+            // Linéarité (Γ = 0) : repli dans les lignes 1 et ns−2.
+            b[1] += 2.0 * a[1];
+            c[1] -= a[1];
+            a[1] = 0.0;
+            b[ns - 2] += 2.0 * c[ns - 2];
+            a[ns - 2] -= c[ns - 2];
+            c[ns - 2] = 0.0;
 
-            // Solve tridiagonal for this j-line
-            let sol = self.thomas(&a, &b, &c, &rhs)?;
-            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
-            for i in 0..ns {
-                v_new[[i, j]] = sol[i];
+            let sol = self.thomas(&a, &b, &c, &d)?;
+            for i in 1..ns - 1 {
+                out[[i, j]] = sol[i];
             }
+            out[[0, j]] = 2.0 * out[[1, j]] - out[[2, j]];
+            out[[ns - 1, j]] = 2.0 * out[[ns - 2, j]] - out[[ns - 3, j]];
         }
-
-        Ok(v_new)
+        Ok(out)
     }
 
-    /// ADI v-direction sweep (solve tridiagonal systems along v).
-    fn adi_v_sweep(&self, v_old: &Array2<f64>) -> Result<Array2<f64>, KontractError> {
-        let ns = self.cfg.n_space_s;
-        let nv = self.cfg.n_space_v;
-        let dv = self.dv;
-        let dt = self.dt;
-        let r = self.cfg.rate;
-        let sigma = self.cfg.vol_second;
-        let kappa = self.cfg.kappa;
-        let theta = self.cfg.theta;
-
-        let mut v_new = Array2::zeros((ns, nv));
-
-        // For each S-line, solve a tridiagonal v-system
-        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+    /// Résout `(I − θΔt A_v) X = rhs` ligne par ligne (tridiagonal en v),
+    /// condition de bord par linéarité (Γ = 0).
+    fn solve_v_implicit(
+        &self,
+        rhs: &Array2<f64>,
+        theta: f64,
+    ) -> Result<Array2<f64>, KontractError> {
+        let (ns, nv) = (self.cfg.n_space_s, self.cfg.n_space_v);
+        let (dv, dt, r) = (self.dv, self.dt, self.cfg.rate);
+        let (sigma, kappa, th) = (self.cfg.vol_second, self.cfg.kappa, self.cfg.theta);
+        let mut out = Array2::zeros((ns, nv));
+        // noyau numérique : un système tridiagonal par ligne S.
         for i in 0..ns {
-            let _si = self.s_grid[i];
-
             let mut a = vec![0.0; nv];
             let mut b = vec![1.0; nv];
             let mut c = vec![0.0; nv];
-            let mut rhs = vec![0.0; nv];
-
-            // Boundary conditions (v at extremes)
-            rhs[0] = v_old[[i, 0]];
-            rhs[nv - 1] = v_old[[i, nv - 1]];
-
-            // Interior points
-            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+            let mut d = vec![0.0; nv];
             for j in 1..nv - 1 {
                 let vj = self.v_grid[j];
-
-                // ADI coefficients for v-sweep in Heston
-                let drift_v = 0.25 * dt * kappa * (theta - vj) / dv;
-                let diff_v = 0.5 * dt * sigma * sigma * vj / (dv * dv);
-
-                // Implicit LHS (v-sweep, S held fixed)
-                a[j] = -diff_v - drift_v;
-                b[j] = 1.0 + 2.0 * diff_v + 0.5 * dt * r;
-                c[j] = -diff_v + drift_v;
-
-                // Explicit RHS
-                rhs[j] = (diff_v - drift_v) * v_old[[i, j - 1]]
-                    + (1.0 - 2.0 * diff_v - 0.5 * dt * r) * v_old[[i, j]]
-                    + (diff_v + drift_v) * v_old[[i, j + 1]];
+                let dv2 = 0.5 * sigma * sigma * vj / (dv * dv);
+                let drv = kappa * (th - vj) / (2.0 * dv);
+                a[j] = -theta * dt * (dv2 - drv);
+                b[j] = 1.0 + theta * dt * (2.0 * dv2 + 0.5 * r);
+                c[j] = -theta * dt * (dv2 + drv);
+                d[j] = rhs[[i, j]];
             }
+            b[1] += 2.0 * a[1];
+            c[1] -= a[1];
+            a[1] = 0.0;
+            b[nv - 2] += 2.0 * c[nv - 2];
+            a[nv - 2] -= c[nv - 2];
+            c[nv - 2] = 0.0;
 
-            // Solve tridiagonal for this i-line
-            let sol = self.thomas(&a, &b, &c, &rhs)?;
-            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
-            for j in 0..nv {
-                v_new[[i, j]] = sol[j];
+            let sol = self.thomas(&a, &b, &c, &d)?;
+            for j in 1..nv - 1 {
+                out[[i, j]] = sol[j];
             }
+            out[[i, 0]] = 2.0 * out[[i, 1]] - out[[i, 2]];
+            out[[i, nv - 1]] = 2.0 * out[[i, nv - 2]] - out[[i, nv - 3]];
         }
-
-        Ok(v_new)
+        Ok(out)
     }
 
     /// Thomas algorithm for tridiagonal system (shared with J19).
@@ -356,6 +413,7 @@ mod tests {
             vol_second: 0.3,
             kappa: 2.0,
             theta: 0.04,
+            rho: -0.5,
             maturity: 1.0,
             n_space_s: 50,
             n_space_v: 50,
@@ -383,6 +441,7 @@ mod tests {
             vol_second: 0.3,
             kappa: 2.0,
             theta: 0.04,
+            rho: -0.5,
             maturity: 1.0,
             n_space_s: 60,
             n_space_v: 40,
@@ -408,9 +467,69 @@ mod tests {
             error * 100.0
         );
         assert!(
-            error < 0.3,
+            error < 0.03,
             "ADI Heston error too large: {:.2}%",
             error * 100.0
+        );
+    }
+
+    /// Validation rigoureuse : la PDE ADI 2D (avec terme croisé) doit retrouver le
+    /// prix Monte-Carlo Heston (simulateur validé en J12) à ~2 % près.
+    #[test]
+    fn test_heston_pde_vs_mc() {
+        use crate::pricer::{price_gbm, McConfig};
+        use crate::products::european_call;
+        use crate::HestonSimulator;
+
+        let (spot, v0, kappa, theta, sigma_v, rho, rate, t) =
+            (100.0, 0.04, 2.0, 0.04, 0.3, -0.5, 0.05, 1.0);
+
+        let cfg = Pde2dConfig {
+            spot,
+            second_spot: v0,
+            rate,
+            dividend_yield: 0.0,
+            vol_second: sigma_v,
+            kappa,
+            theta,
+            rho,
+            maturity: t,
+            n_space_s: 160,
+            n_space_v: 80,
+            n_time: 200,
+            s_min: 1.0,
+            s_max: 400.0,
+            v_min: 0.0001,
+            v_max: 1.0,
+        };
+        let solver = Pde2dSolver::new(cfg).unwrap();
+        let grid = solver.solve_heston(|s, _v| (s - 100.0).max(0.0)).unwrap();
+        let pde_val = solver.interpolate(&grid, spot, v0);
+
+        let heston = HestonSimulator::new("S", spot, v0, kappa, theta, sigma_v, rho, rate);
+        let mc = price_gbm(
+            &european_call("S", 100.0, t, "USD"),
+            &heston,
+            &McConfig {
+                n_paths: 200_000,
+                seed: 7,
+                steps_per_year: 200,
+                rate,
+                variance_reduction: None,
+            },
+        )
+        .unwrap()
+        .price;
+
+        let rel = (pde_val - mc).abs() / mc;
+        println!(
+            "Heston ADI={pde_val:.5} vs MC={mc:.5} rel={:.4}%",
+            rel * 100.0
+        );
+        assert!(
+            rel < 0.02,
+            "ADI {pde_val:.5} vs MC {mc:.5} rel {:.3}%",
+            rel * 100.0
         );
     }
 
@@ -424,6 +543,7 @@ mod tests {
             vol_second: 0.3,
             kappa: 2.0,
             theta: 0.04,
+            rho: -0.5,
             maturity: 1.0,
             n_space_s: 60,
             n_space_v: 40,
@@ -460,6 +580,7 @@ mod tests {
             vol_second: 0.3,
             kappa: 2.0,
             theta: 0.04,
+            rho: -0.5,
             maturity: 1.0,
             n_space_s: 60,
             n_space_v: 40,
@@ -497,6 +618,7 @@ mod tests {
             vol_second: 0.3,
             kappa: 2.0,
             theta: 0.04,
+            rho: -0.5,
             maturity: 1.0,
             n_space_s: 60,
             n_space_v: 40,
