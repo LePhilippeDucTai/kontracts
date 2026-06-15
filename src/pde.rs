@@ -44,6 +44,9 @@ pub struct PdeSolver {
     space_grid: Array1<f64>,
     dx: f64,
     dt: f64,
+    coeff_a: Vec<f64>,
+    coeff_b: Vec<f64>,
+    coeff_c: Vec<f64>,
 }
 
 impl PdeSolver {
@@ -78,11 +81,37 @@ impl PdeSolver {
                 .collect(),
         );
 
+        let n = cfg.n_space;
+        let mut coeff_a = vec![0.0; n];
+        let mut coeff_b = vec![1.0; n];
+        let mut coeff_c = vec![0.0; n];
+
+        let r = cfg.rate;
+        let q = cfg.dividend_yield;
+        let sigma = cfg.sigma;
+        let drift_factor = 0.25 * dt * (r - q);
+        let diff_factor = 0.5 * dt * sigma * sigma;
+        let rate_coef = 0.5 * dt * r;
+
+        for i in 1..n - 1 {
+            let si = space_grid[i];
+            let s_factor = si / dx;
+            let drift_coef = drift_factor * s_factor;
+            let diff_coef = diff_factor * s_factor * s_factor;
+
+            coeff_a[i] = -diff_coef - drift_coef;
+            coeff_b[i] = 1.0 + 2.0 * diff_coef + rate_coef;
+            coeff_c[i] = -diff_coef + drift_coef;
+        }
+
         Ok(PdeSolver {
             cfg,
             space_grid,
             dx,
             dt,
+            coeff_a,
+            coeff_b,
+            coeff_c,
         })
     }
 
@@ -145,31 +174,23 @@ impl PdeSolver {
         let sigma = self.cfg.sigma;
         let s = &self.space_grid;
 
-        let mut a = vec![0.0; n];
-        let mut b = vec![1.0; n];
-        let mut c = vec![0.0; n];
         let mut rhs = Array1::zeros(n);
 
         // Boundary conditions
         rhs[0] = v_old[0];
         rhs[n - 1] = v_old[n - 1];
 
-        // Interior points using standard CN discretization
+        // Compute RHS using pre-calculated coefficients
+        let drift_factor = 0.25 * dt * (r - q);
+        let diff_factor = 0.5 * dt * sigma * sigma;
+        let rate_coef = 0.5 * dt * r;
+
         for i in 1..n - 1 {
             let si = s[i];
             let s_factor = si / dx;
+            let drift_coef = drift_factor * s_factor;
+            let diff_coef = diff_factor * s_factor * s_factor;
 
-            // Coefficients for implicit (LHS) and explicit (RHS) parts
-            let drift_coef = 0.25 * dt * (r - q) * s_factor;
-            let diff_coef = 0.5 * dt * sigma * sigma * s_factor * s_factor;
-            let rate_coef = 0.5 * dt * r;
-
-            // Implicit LHS: a*V_{i-1} + b*V_i + c*V_{i+1}
-            a[i] = -diff_coef - drift_coef;
-            b[i] = 1.0 + 2.0 * diff_coef + rate_coef;
-            c[i] = -diff_coef + drift_coef;
-
-            // Explicit RHS: compute right-hand side from v_old
             rhs[i] = (diff_coef - drift_coef) * v_old[i - 1]
                 + (1.0 - 2.0 * diff_coef - rate_coef) * v_old[i]
                 + (diff_coef + drift_coef) * v_old[i + 1];
@@ -183,7 +204,9 @@ impl PdeSolver {
                 let mut res_max: f64 = 0.0;
 
                 for i in 1..n - 1 {
-                    let v_pred = (rhs[i] - a[i] * v_new[i - 1] - c[i] * v_new[i + 1]) / b[i];
+                    let v_pred =
+                        (rhs[i] - self.coeff_a[i] * v_new[i - 1] - self.coeff_c[i] * v_new[i + 1])
+                            / self.coeff_b[i];
                     let v_proj = v_pred.max(payoff[i]);
                     res_max = res_max.max((v_proj - v_new[i]).abs());
                     v_new[i] += self.cfg.sor_omega * (v_proj - v_new[i]);
@@ -195,7 +218,7 @@ impl PdeSolver {
             }
             Ok(v_new)
         } else {
-            self.thomas(&a, &b, &c, &rhs)
+            self.thomas(&self.coeff_a, &self.coeff_b, &self.coeff_c, &rhs)
         }
     }
 
