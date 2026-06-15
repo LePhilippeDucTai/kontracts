@@ -94,25 +94,23 @@ pub fn simulate_antithetic_gbm(
         .map(|i| {
             let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
 
-            let mut spots_base = vec![0.0f64; n_steps];
-            let mut spots_anti = vec![0.0f64; n_steps];
-            let mut s_b = s0;
-            let mut s_a = s0;
-            let mut prev_t = 0.0_f64;
-
-            for (k, &t) in times.iter().enumerate() {
-                let dt = t - prev_t;
-                if dt > 0.0 {
-                    let z: f64 = rng.sample(StandardNormal);
-                    let drift = (mu - 0.5 * sigma * sigma) * dt;
-                    let diff_scale = sigma * dt.sqrt();
-                    s_b *= (drift + diff_scale * z).exp();
-                    s_a *= (drift - diff_scale * z).exp(); // antithétique : −z
-                }
-                spots_base[k] = s_b;
-                spots_anti[k] = s_a;
-                prev_t = t;
-            }
+            // Récurrence séquentielle GBM : chaque pas dépend du précédent.
+            // État : (s_base, s_anti, prev_t) → produit une paire de spots par étape.
+            let (spots_base, spots_anti): (Vec<f64>, Vec<f64>) = times
+                .iter()
+                .scan((s0, s0, 0.0_f64), |(s_b, s_a, prev_t), &t| {
+                    let dt = t - *prev_t;
+                    if dt > 0.0 {
+                        let z: f64 = rng.sample(StandardNormal);
+                        let drift = (mu - 0.5 * sigma * sigma) * dt;
+                        let diff_scale = sigma * dt.sqrt();
+                        *s_b *= (drift + diff_scale * z).exp();
+                        *s_a *= (drift - diff_scale * z).exp(); // antithétique : −z
+                    }
+                    *prev_t = t;
+                    Some((*s_b, *s_a))
+                })
+                .unzip();
 
             let path_b = Path::new(times.to_vec())
                 .with_asset(asset.to_string(), spots_base)

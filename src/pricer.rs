@@ -255,15 +255,18 @@ pub fn price_batch_gbm(
     }
 
     // Plan unifié : union des dates, horizon max, grille fine si une barrière.
-    let mut fixed_dates = Vec::new();
-    let mut horizon = 0.0_f64;
-    let mut needs_fine_grid = false;
-    for c in contracts {
-        let plan = compile(c)?;
-        fixed_dates.extend(plan.fixed_dates);
-        horizon = horizon.max(plan.horizon);
-        needs_fine_grid |= plan.needs_fine_grid;
-    }
+    let (fixed_dates, horizon, needs_fine_grid) = contracts
+        .iter()
+        .map(compile)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .fold(
+            (Vec::new(), 0.0_f64, false),
+            |(mut dates, h, fine), plan| {
+                dates.extend(plan.fixed_dates);
+                (dates, h.max(plan.horizon), fine | plan.needs_fine_grid)
+            },
+        );
     let merged = Plan {
         assets: Vec::new(),
         fixed_dates,
@@ -374,26 +377,18 @@ fn cashflows(
     match contract {
         Contract::Zero => Ok(vec![]),
         Contract::One(_) => Ok(vec![(1.0, t_idx)]),
-        Contract::Give(c) => {
-            let mut flows = cashflows(c, t_idx, path)?;
-            for f in &mut flows {
-                f.0 = -f.0;
-            }
-            Ok(flows)
-        }
+        Contract::Give(c) => cashflows(c, t_idx, path)
+            .map(|flows| flows.into_iter().map(|(amt, ti)| (-amt, ti)).collect()),
         Contract::And(a, b) => {
             let mut flows = cashflows(a, t_idx, path)?;
             flows.extend(cashflows(b, t_idx, path)?);
             Ok(flows)
         }
-        Contract::Scale(obs, c) => {
-            let mut flows = cashflows(c, t_idx, path)?;
-            for f in &mut flows {
-                // L'observable est échantillonné à la date du flux qu'il met à l'échelle.
-                f.0 *= obs.eval(path, f.1)?;
-            }
-            Ok(flows)
-        }
+        Contract::Scale(obs, c) => cashflows(c, t_idx, path)?
+            .into_iter()
+            // L'observable est échantillonné à la date du flux qu'il met à l'échelle.
+            .map(|(amt, ti)| obs.eval(path, ti).map(|scale| (amt * scale, ti)))
+            .collect(),
         // `when` : acquiert `c` à la **première** activation de la condition
         // (date `at`, ou premier franchissement de barrière), à partir de `t_idx`.
         Contract::When(cond, c) => match first_activation(cond, path, t_idx)? {
@@ -426,10 +421,11 @@ fn first_activation(
     path: &Path,
     start: usize,
 ) -> Result<Option<usize>, KontractError> {
-    for t in start..path.len() {
-        if cond.eval(path, t)? {
-            return Ok(Some(t));
-        }
-    }
-    Ok(None)
+    (start..path.len())
+        .find_map(|t| match cond.eval(path, t) {
+            Err(e) => Some(Err(e)),
+            Ok(true) => Some(Ok(t)),
+            Ok(false) => None,
+        })
+        .transpose()
 }
