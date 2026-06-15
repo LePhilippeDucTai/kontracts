@@ -125,6 +125,7 @@ pub fn thomas(a: &[f64], b: &[f64], c: &[f64], rhs: &[f64]) -> Result<Vec<f64>, 
     c_mod[0] = c[0] / b[0];
     d_mod[0] = rhs[0] / b[0];
 
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
     for i in 1..n {
         let denom = b[i] - a[i] * c_mod[i - 1];
         if denom.abs() < 1e-15 {
@@ -139,6 +140,7 @@ pub fn thomas(a: &[f64], b: &[f64], c: &[f64], rhs: &[f64]) -> Result<Vec<f64>, 
     }
 
     x[n - 1] = d_mod[n - 1];
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
     for i in (0..n - 1).rev() {
         x[i] = d_mod[i] - c_mod[i] * x[i + 1];
     }
@@ -156,11 +158,13 @@ pub fn thomas(a: &[f64], b: &[f64], c: &[f64], rhs: &[f64]) -> Result<Vec<f64>, 
 pub fn cholesky_lower(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let n = a.len();
     let mut l = vec![vec![0.0f64; n]; n];
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
     for i in 0..n {
         for j in 0..=i {
             let mut sum = a[i][j];
             // Produit scalaire des lignes i et j sur [0, j) ; l'indexation par k
             // est nécessaire (les deux lignes de `l` sont empruntées en lecture).
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             #[allow(clippy::needless_range_loop)]
             for k in 0..j {
                 sum -= l[i][k] * l[j][k];
@@ -185,10 +189,12 @@ pub fn cholesky_lower(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
 #[allow(clippy::needless_range_loop)] // élimination de Gauss : indices ligne/colonne
 pub fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, KontractError> {
     let n = b.len();
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
     for col in 0..n {
         // Pivot partiel : ligne au plus grand |a[row][col]|.
         let mut pivot = col;
         let mut best = a[col][col].abs();
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for row in (col + 1)..n {
             let v = a[row][col].abs();
             if v > best {
@@ -204,8 +210,10 @@ pub fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, K
         b.swap(col, pivot);
 
         // Élimination.
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for row in (col + 1)..n {
             let factor = a[row][col] / a[col][col];
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for c in col..n {
                 a[row][c] -= factor * a[col][c];
             }
@@ -215,8 +223,10 @@ pub fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, K
 
     // Substitution arrière.
     let mut x = vec![0.0f64; n];
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
     for row in (0..n).rev() {
         let mut sum = b[row];
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for c in (row + 1)..n {
             sum -= a[row][c] * x[c];
         }

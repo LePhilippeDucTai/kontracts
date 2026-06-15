@@ -135,7 +135,9 @@ impl Pde2dSolver {
         let mut v = Array2::zeros((ns, nv));
 
         // Terminal condition: payoff at all grid points
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for i in 0..ns {
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for j in 0..nv {
                 v[[i, j]] = payoff_fn(self.s_grid[i], self.v_grid[j]);
             }
@@ -168,6 +170,7 @@ impl Pde2dSolver {
         let mut v_new = Array2::zeros((ns, nv));
 
         // For each v-line, solve a tridiagonal S-system
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for j in 0..nv {
             let vj = self.v_grid[j];
 
@@ -181,6 +184,7 @@ impl Pde2dSolver {
             rhs[ns - 1] = v_old[[ns - 1, j]];
 
             // Interior points
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for i in 1..ns - 1 {
                 let si = self.s_grid[i];
 
@@ -202,6 +206,7 @@ impl Pde2dSolver {
 
             // Solve tridiagonal for this j-line
             let sol = self.thomas(&a, &b, &c, &rhs)?;
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for i in 0..ns {
                 v_new[[i, j]] = sol[i];
             }
@@ -224,6 +229,7 @@ impl Pde2dSolver {
         let mut v_new = Array2::zeros((ns, nv));
 
         // For each S-line, solve a tridiagonal v-system
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for i in 0..ns {
             let _si = self.s_grid[i];
 
@@ -237,6 +243,7 @@ impl Pde2dSolver {
             rhs[nv - 1] = v_old[[i, nv - 1]];
 
             // Interior points
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for j in 1..nv - 1 {
                 let vj = self.v_grid[j];
 
@@ -257,6 +264,7 @@ impl Pde2dSolver {
 
             // Solve tridiagonal for this i-line
             let sol = self.thomas(&a, &b, &c, &rhs)?;
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for j in 0..nv {
                 v_new[[i, j]] = sol[j];
             }

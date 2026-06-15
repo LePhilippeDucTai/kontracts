@@ -93,6 +93,7 @@ impl PdeSolver {
         let diff_factor = 0.5 * dt * sigma * sigma;
         let rate_coef = 0.5 * dt * r;
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for i in 1..n - 1 {
             let si = space_grid[i];
             let s_factor = si / dx;
@@ -136,6 +137,7 @@ impl PdeSolver {
 
         for _ in 0..self.cfg.n_time {
             v = self.cn_step(&v, true)?;
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for i in 0..n {
                 v[i] = v[i].max(payoff[i]);
             }
@@ -185,6 +187,7 @@ impl PdeSolver {
         let diff_factor = 0.5 * dt * sigma * sigma;
         let rate_coef = 0.5 * dt * r;
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for i in 1..n - 1 {
             let si = s[i];
             let s_factor = si / dx;
@@ -203,6 +206,7 @@ impl PdeSolver {
             for _ in 0..self.cfg.psor_max_iterations {
                 let mut res_max: f64 = 0.0;
 
+                // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
                 for i in 1..n - 1 {
                     let v_pred =
                         (rhs[i] - self.coeff_a[i] * v_new[i - 1] - self.coeff_c[i] * v_new[i + 1])
