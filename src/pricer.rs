@@ -124,65 +124,23 @@ fn price_gbm_with_vr(
     grid: &[f64],
     vr: &VarianceReductionConfig,
 ) -> Result<PriceResult, KontractError> {
-    use crate::ast::{at, konst, one, scale, spot, when};
-    use crate::variance_reduction::{
-        apply_control_variate, black_scholes_call, price_antithetic_on_paths,
-    };
-
+    // Tenter les trajectoires antithétiques si activées ; sinon fallback standard.
     if vr.use_antithetic {
         let n_half = cfg.n_paths / 2;
-        match model.simulate_antithetic_paths(grid, n_half, cfg.seed)? {
-            Some((bases, antis)) => {
-                if vr.use_control_variate {
-                    // Antithétique + variable de contrôle combinés.
-                    let (s0, sigma) = model.gbm_params().unwrap_or((100.0, 0.2));
-                    let t_mat = *grid.last().unwrap_or(&1.0);
-                    let asset = model.asset_name();
-                    let ctrl_call = when(
-                        at(t_mat),
-                        scale((spot(asset) - konst(s0)).max(konst(0.0)), one("USD")),
-                    );
-                    let bs_price = black_scholes_call(s0, s0, t_mat, cfg.rate, sigma);
-
-                    let res_anti =
-                        price_antithetic_on_paths(contract, &bases, &antis, grid, cfg.rate)?;
-                    let ctrl_anti =
-                        price_antithetic_on_paths(&ctrl_call, &bases, &antis, grid, cfg.rate)?;
-
-                    let corrected_price =
-                        apply_control_variate(res_anti.price, ctrl_anti.price, bs_price, 1.0);
-                    let n = bases.len() + antis.len();
-                    let std_error = res_anti.sample_std / (n as f64).sqrt();
-                    let ci95 = Z95 * std_error;
-                    Ok(PriceResult {
-                        price: corrected_price,
-                        sample_std: res_anti.sample_std,
-                        std_error,
-                        ci95_low: corrected_price - ci95,
-                        ci95_high: corrected_price + ci95,
-                        n_paths: n,
-                    })
-                } else {
-                    // Antithétique seul.
-                    price_antithetic_on_paths(contract, &bases, &antis, grid, cfg.rate)
-                }
-            }
-            None => {
-                // Simulateur sans support antithétique : fallback standard.
-                let paths = model.simulate_paths(grid, cfg.n_paths, cfg.seed)?;
-                if vr.use_control_variate {
-                    apply_cv_on_paths(contract, model, &paths, grid, cfg)
-                } else {
-                    price_on_paths(contract, &paths, grid, cfg.rate)
-                }
-            }
+        if let Some((bases, antis)) = model.simulate_antithetic_paths(grid, n_half, cfg.seed)? {
+            return if vr.use_control_variate {
+                price_antithetic_with_cv(contract, model, grid, cfg, &bases, &antis)
+            } else {
+                price_antithetic_only(contract, &bases, &antis, grid, cfg.rate)
+            };
         }
-    } else if vr.use_control_variate {
-        let paths = model.simulate_paths(grid, cfg.n_paths, cfg.seed)?;
+    }
+
+    // Fallback : simulateur sans antithétique ou antithétique désactivée.
+    let paths = model.simulate_paths(grid, cfg.n_paths, cfg.seed)?;
+    if vr.use_control_variate {
         apply_cv_on_paths(contract, model, &paths, grid, cfg)
     } else {
-        // VR config présente mais options inactives → comportement standard.
-        let paths = model.simulate_paths(grid, cfg.n_paths, cfg.seed)?;
         price_on_paths(contract, &paths, grid, cfg.rate)
     }
 }
@@ -207,6 +165,60 @@ fn apply_cv_on_paths(
     );
     let bs_price = black_scholes_call(s0, s0, t_mat, cfg.rate, sigma);
     price_control_variate_on_paths(contract, &ctrl_call, bs_price, 1.0, paths, grid, cfg.rate)
+}
+
+/// Price un contrat sur des trajectoires antithétiques **sans** variable de contrôle.
+fn price_antithetic_only(
+    contract: &Contract,
+    bases: &[Path],
+    antis: &[Path],
+    grid: &[f64],
+    rate: f64,
+) -> Result<PriceResult, KontractError> {
+    use crate::variance_reduction::price_antithetic_on_paths;
+    price_antithetic_on_paths(contract, bases, antis, grid, rate)
+}
+
+/// Price un contrat sur des trajectoires antithétiques **avec** variable de contrôle.
+fn price_antithetic_with_cv(
+    contract: &Contract,
+    model: &dyn Simulator,
+    grid: &[f64],
+    cfg: &McConfig,
+    bases: &[Path],
+    antis: &[Path],
+) -> Result<PriceResult, KontractError> {
+    use crate::ast::{at, konst, one, scale, spot, when};
+    use crate::variance_reduction::{
+        apply_control_variate, black_scholes_call, price_antithetic_on_paths,
+    };
+
+    let (s0, sigma) = model.gbm_params().unwrap_or((100.0, 0.2));
+    let t_mat = *grid.last().unwrap_or(&1.0);
+    let asset = model.asset_name();
+
+    let ctrl_call = when(
+        at(t_mat),
+        scale((spot(asset) - konst(s0)).max(konst(0.0)), one("USD")),
+    );
+    let bs_price = black_scholes_call(s0, s0, t_mat, cfg.rate, sigma);
+
+    let res_anti = price_antithetic_on_paths(contract, bases, antis, grid, cfg.rate)?;
+    let ctrl_anti = price_antithetic_on_paths(&ctrl_call, bases, antis, grid, cfg.rate)?;
+
+    let corrected_price = apply_control_variate(res_anti.price, ctrl_anti.price, bs_price, 1.0);
+    let n = bases.len() + antis.len();
+    let std_error = res_anti.sample_std / (n as f64).sqrt();
+    let ci95 = Z95 * std_error;
+
+    Ok(PriceResult {
+        price: corrected_price,
+        sample_std: res_anti.sample_std,
+        std_error,
+        ci95_low: corrected_price - ci95,
+        ci95_high: corrected_price + ci95,
+        n_paths: n,
+    })
 }
 
 /// Évalue un contrat sur des trajectoires **déjà simulées** (parallèle par path).
