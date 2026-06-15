@@ -202,6 +202,11 @@ impl Gbm {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
+        if self.sigma < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "GBM sigma must be non-negative".to_string(),
+            ));
+        }
         validate_grid(times)?;
         let n_steps = times.len();
 
@@ -512,6 +517,31 @@ impl Simulator for HestonSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
+        if !(self.rho >= -1.0 && self.rho <= 1.0) {
+            return Err(KontractError::MalformedContract(
+                "Heston rho must be in [-1, 1]".to_string(),
+            ));
+        }
+        if self.v0 < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "Heston v0 must be non-negative".to_string(),
+            ));
+        }
+        if self.sigma_v < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "Heston sigma_v must be non-negative".to_string(),
+            ));
+        }
+        if self.theta < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "Heston theta must be non-negative".to_string(),
+            ));
+        }
+        if self.kappa < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "Heston kappa must be non-negative".to_string(),
+            ));
+        }
         let times_copy = times.to_vec();
         generic_simulate(times, n_paths, seed, move |_i, rng| {
             self.simulate_one_path(&times_copy, rng)
@@ -708,6 +738,26 @@ impl Simulator for DupireSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
+        if self.spot_grid.is_empty() || self.time_grid.is_empty() {
+            return Err(KontractError::MalformedContract(
+                "Dupire grids must be non-empty".to_string(),
+            ));
+        }
+        if !self.spot_grid.windows(2).all(|w| w[0] < w[1]) {
+            return Err(KontractError::MalformedContract(
+                "Dupire spot_grid must be strictly sorted".to_string(),
+            ));
+        }
+        if !self.time_grid.windows(2).all(|w| w[0] < w[1]) {
+            return Err(KontractError::MalformedContract(
+                "Dupire time_grid must be strictly sorted".to_string(),
+            ));
+        }
+        if self.local_vol.iter().any(|&v| v < 0.0) {
+            return Err(KontractError::MalformedContract(
+                "Dupire local_vol values must be non-negative".to_string(),
+            ));
+        }
         let times_copy = times.to_vec();
         generic_simulate(times, n_paths, seed, move |_i, rng| {
             self.simulate_one_path(&times_copy, rng)
@@ -997,6 +1047,26 @@ impl Simulator for SABRSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
+        if self.alpha < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "SABR alpha must be non-negative".to_string(),
+            ));
+        }
+        if !(self.beta > 0.0 && self.beta <= 1.0) {
+            return Err(KontractError::MalformedContract(
+                "SABR beta must be in (0, 1]".to_string(),
+            ));
+        }
+        if self.nu < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "SABR nu must be non-negative".to_string(),
+            ));
+        }
+        if !(self.rho >= -1.0 && self.rho <= 1.0) {
+            return Err(KontractError::MalformedContract(
+                "SABR rho must be in [-1, 1]".to_string(),
+            ));
+        }
         let times_copy = times.to_vec();
         generic_simulate(times, n_paths, seed, move |_i, rng| {
             self.simulate_one_path(&times_copy, rng)
@@ -1141,6 +1211,21 @@ impl Simulator for MertonJumpSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
+        if self.sigma < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "Merton sigma must be non-negative".to_string(),
+            ));
+        }
+        if self.lambda < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "Merton lambda must be non-negative".to_string(),
+            ));
+        }
+        if self.sigma_j < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "Merton sigma_j must be non-negative".to_string(),
+            ));
+        }
         let times_copy = times.to_vec();
         generic_simulate(times, n_paths, seed, move |_i, rng| {
             self.simulate_one_path(&times_copy, rng)
@@ -1456,6 +1541,26 @@ impl Simulator for RoughBergomiSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
+        if self.v0 < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "RoughBergomi v0 must be non-negative".to_string(),
+            ));
+        }
+        if self.xi < 0.0 {
+            return Err(KontractError::MalformedContract(
+                "RoughBergomi xi must be non-negative".to_string(),
+            ));
+        }
+        if !(self.h > 0.0 && self.h < 1.0) {
+            return Err(KontractError::MalformedContract(
+                "RoughBergomi h must be in (0, 1)".to_string(),
+            ));
+        }
+        if !(self.rho >= -1.0 && self.rho <= 1.0) {
+            return Err(KontractError::MalformedContract(
+                "RoughBergomi rho must be in [-1, 1]".to_string(),
+            ));
+        }
         let times_copy = times.to_vec();
         // Factorisation de Cholesky calculée **une seule fois** et partagée par
         // toutes les trajectoires (c'est le coût O(n²) amorti du Rough Bergomi).
