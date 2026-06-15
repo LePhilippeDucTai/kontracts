@@ -41,6 +41,70 @@ pub struct CalibrationResult {
     pub converged: bool,
 }
 
+/// Calcule la MSE entre les prix Monte-Carlo GBM et les prix de marché.
+fn eval_obj_gbm(
+    contract: &Contract,
+    market_prices: &[(f64, f64)],
+    sigma: f64,
+    rate: f64,
+    mc_config: &McConfig,
+) -> f64 {
+    let sum_sq: f64 = market_prices
+        .iter()
+        .filter_map(|&(spot, market_price)| {
+            let gbm = Gbm::new("underlying", spot, rate, sigma);
+            crate::pricer::price_gbm(contract, &gbm, mc_config)
+                .ok()
+                .map(|result| {
+                    let diff = result.price - market_price;
+                    diff * diff
+                })
+        })
+        .sum();
+    sum_sq / market_prices.len() as f64
+}
+
+/// Calcule la MSE entre les prix Monte-Carlo Heston et les prix de marché.
+fn eval_obj_heston(
+    contract: &Contract,
+    market_prices: &[(f64, f64)],
+    params: &[f64],
+    rate: f64,
+    mc_config: &McConfig,
+) -> f64 {
+    let (v0, kappa, theta, sigma_v, rho) = (params[0], params[1], params[2], params[3], params[4]);
+    let sum_sq: f64 = market_prices
+        .iter()
+        .filter_map(|&(spot, market_price)| {
+            let heston =
+                HestonSimulator::new("underlying", spot, v0, kappa, theta, sigma_v, rho, rate);
+            crate::pricer::price_gbm(contract, &heston, mc_config)
+                .ok()
+                .map(|result| {
+                    let diff = result.price - market_price;
+                    diff * diff
+                })
+        })
+        .sum();
+    sum_sq / market_prices.len() as f64
+}
+
+/// Applique les contraintes sur les paramètres Heston.
+fn clamp_heston_params(params: Vec<f64>) -> Vec<f64> {
+    params
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| match i {
+            0 => p.max(0.001),         // v0 > 0
+            1 => p.max(0.01),          // kappa > 0
+            2 => p.max(0.001),         // theta > 0
+            3 => p.clamp(0.01, 2.0),   // sigma_v in (0, 2)
+            4 => p.clamp(-0.99, 0.99), // rho in (-1, 1)
+            _ => p,
+        })
+        .collect()
+}
+
 /// Fit GBM volatility from market prices (single parameter: σ).
 /// `contract`: payoff to calibrate (e.g., European call)
 /// `times`: time grid for simulation
@@ -58,8 +122,8 @@ pub fn fit_gbm_volatility(
     let mut obj_prev = f64::INFINITY;
     let mut converged = false;
 
+    // Boucle de convergence trust-region : conservée (cf. CLAUDE.md exceptions — algorithme itératif avec early-return)
     for iter in 0..config.max_iterations {
-        // Evaluate objective at current σ.
         let mc_config = McConfig {
             n_paths: config.n_paths,
             seed: 42,
@@ -68,24 +132,13 @@ pub fn fit_gbm_volatility(
             variance_reduction: None,
         };
 
-        let mut obj = 0.0;
-        for &(spot, market_price) in market_prices {
-            let gbm = Gbm::new("underlying", spot, rate, sigma);
-            match crate::pricer::price_gbm(contract, &gbm, &mc_config) {
-                Ok(result) => {
-                    let diff = result.price - market_price;
-                    obj += diff * diff;
-                }
-                Err(_) => continue,
-            }
-        }
-        obj /= market_prices.len() as f64;
+        let obj = eval_obj_gbm(contract, market_prices, sigma, rate, &mc_config);
 
         // Check convergence on objective.
         if (obj_prev - obj).abs() < config.tol_obj {
             converged = true;
             return Ok(CalibrationResult {
-                parameters: [sigma].to_vec(),
+                parameters: vec![sigma],
                 objective: obj,
                 iterations: iter + 1,
                 converged,
@@ -95,15 +148,13 @@ pub fn fit_gbm_volatility(
 
         // Trust-region step: adjust σ based on gradient approximation.
         let delta_sigma = 0.001;
-        let mut obj_up = 0.0;
-        for &(spot, market_price) in market_prices {
-            let gbm_up = Gbm::new("underlying", spot, rate, sigma + delta_sigma);
-            if let Ok(result) = crate::pricer::price_gbm(contract, &gbm_up, &mc_config) {
-                let diff = result.price - market_price;
-                obj_up += diff * diff;
-            }
-        }
-        obj_up /= market_prices.len() as f64;
+        let obj_up = eval_obj_gbm(
+            contract,
+            market_prices,
+            sigma + delta_sigma,
+            rate,
+            &mc_config,
+        );
 
         let grad = (obj_up - obj) / delta_sigma;
         if grad.abs() < 1e-10 {
@@ -118,7 +169,7 @@ pub fn fit_gbm_volatility(
     }
 
     Ok(CalibrationResult {
-        parameters: [sigma].to_vec(),
+        parameters: vec![sigma],
         objective: obj_prev,
         iterations: config.max_iterations,
         converged,
@@ -140,16 +191,13 @@ pub fn fit_heston_parameters(
     config: &FastCalibrationConfig,
 ) -> Result<CalibrationResult, KontractError> {
     // Initial guess: reasonable Heston parameters.
-    let mut params = [0.04, 2.0, 0.04, 0.3, -0.5].to_vec();
+    let mut params = vec![0.04, 2.0, 0.04, 0.3, -0.5];
 
     let mut obj_prev = f64::INFINITY;
     let mut converged = false;
 
+    // Boucle de convergence trust-region : conservée (cf. CLAUDE.md exceptions — algorithme itératif avec état multi-paramètres)
     for _iter in 0..config.max_iterations {
-        // Evaluate objective at current parameters.
-        let (v0, kappa, theta, sigma_v, rho) =
-            (params[0], params[1], params[2], params[3], params[4]);
-
         let mc_config = McConfig {
             n_paths: config.n_paths,
             seed: 42,
@@ -158,19 +206,7 @@ pub fn fit_heston_parameters(
             variance_reduction: None,
         };
 
-        let mut obj = 0.0;
-        for &(spot, market_price) in market_prices {
-            let heston =
-                HestonSimulator::new("underlying", spot, v0, kappa, theta, sigma_v, rho, rate);
-            match crate::pricer::price_gbm(contract, &heston, &mc_config) {
-                Ok(result) => {
-                    let diff = result.price - market_price;
-                    obj += diff * diff;
-                }
-                Err(_) => continue,
-            }
-        }
-        obj /= market_prices.len() as f64;
+        let obj = eval_obj_heston(contract, market_prices, &params, rate, &mc_config);
 
         // Check convergence.
         if (obj_prev - obj).abs() < config.tol_obj {
@@ -180,43 +216,22 @@ pub fn fit_heston_parameters(
         obj_prev = obj;
 
         // Simple gradient descent with trust region.
-        let delta = [0.001, 0.01, 0.001, 0.01, 0.01].to_vec();
+        let delta = [0.001, 0.01, 0.001, 0.01, 0.01];
 
-        for i in 0..params.len() {
-            let mut params_up = params.clone();
-            params_up[i] += delta[i];
+        let new_params: Vec<f64> = params
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let mut params_up = params.clone();
+                params_up[i] += delta[i];
+                let obj_up = eval_obj_heston(contract, market_prices, &params_up, rate, &mc_config);
+                let grad = (obj_up - obj) / delta[i];
+                let step = -(grad * config.trust_radius * 0.1).clamp(-0.02, 0.02);
+                (p + step).clamp(0.001, 5.0) // Bound parameters
+            })
+            .collect();
 
-            let (v0, kappa, theta, sigma_v, rho) = (
-                params_up[0],
-                params_up[1],
-                params_up[2],
-                params_up[3],
-                params_up[4],
-            );
-
-            let mut obj_up = 0.0;
-            for &(spot, market_price) in market_prices {
-                let heston =
-                    HestonSimulator::new("underlying", spot, v0, kappa, theta, sigma_v, rho, rate);
-                if let Ok(result) = crate::pricer::price_gbm(contract, &heston, &mc_config) {
-                    let diff = result.price - market_price;
-                    obj_up += diff * diff;
-                }
-            }
-            obj_up /= market_prices.len() as f64;
-
-            let grad = (obj_up - obj) / delta[i];
-            let step = -(grad * config.trust_radius * 0.1).clamp(-0.02, 0.02);
-
-            params[i] = (params[i] + step).clamp(0.001, 5.0); // Bound parameters
-        }
-
-        // Enforce constraints on Heston parameters.
-        params[0] = params[0].max(0.001); // v0 > 0
-        params[1] = params[1].max(0.01); // kappa > 0
-        params[2] = params[2].max(0.001); // theta > 0
-        params[3] = params[3].clamp(0.01, 2.0); // sigma_v in (0, 2)
-        params[4] = params[4].clamp(-0.99, 0.99); // rho in (-1, 1)
+        params = clamp_heston_params(new_params);
     }
 
     Ok(CalibrationResult {

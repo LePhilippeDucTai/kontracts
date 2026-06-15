@@ -46,9 +46,7 @@ impl Plan {
 
         if self.needs_fine_grid && self.horizon > 0.0 && steps_per_year > 0 {
             let n = (self.horizon * steps_per_year as f64).ceil() as usize;
-            for k in 1..=n {
-                pts.push(self.horizon * (k as f64) / (n as f64));
-            }
+            pts.extend((1..=n).map(|k| self.horizon * (k as f64) / (n as f64)));
         }
 
         sort_dedup(pts)
