@@ -339,6 +339,14 @@ impl Observable {
     pub fn clip(self, floor: f64) -> Observable {
         self.max(Observable::Const(floor))
     }
+
+    /// Mise à l'échelle du contrat par `self` — pont Observable → Contract.
+    ///
+    /// Équivalent à `scale(self, contract)` ou `self * contract`, en style pipeline :
+    /// `spot("X").sub(100.0).clip(0.0).scale(one(USD)).when(at(1.0))`
+    pub fn scale(self, contract: Contract) -> Contract {
+        Contract::Scale(self, Box::new(contract))
+    }
 }
 
 // --- Arithmétique observable ⊕ scalaire -------------------------------------

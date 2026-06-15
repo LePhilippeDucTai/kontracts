@@ -82,6 +82,41 @@ impl PyObservable {
         }
     }
 
+    // --- Méthodes nommées pour le style pipeline --------------------------------
+    // Permettent d'écrire : spot("X").sub(100.0).clip(0.0).scale(one("USD"))
+    // au lieu de : (spot("X") - 100.0).clip(0.0) * one("USD")
+
+    fn add(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObservable> {
+        Ok(PyObservable {
+            inner: self.inner.clone() + extract_obs(other)?,
+        })
+    }
+
+    fn sub(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObservable> {
+        Ok(PyObservable {
+            inner: self.inner.clone() - extract_obs(other)?,
+        })
+    }
+
+    fn mul(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObservable> {
+        Ok(PyObservable {
+            inner: self.inner.clone() * extract_obs(other)?,
+        })
+    }
+
+    fn div(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObservable> {
+        Ok(PyObservable {
+            inner: self.inner.clone() / extract_obs(other)?,
+        })
+    }
+
+    /// Mise à l'échelle du contrat — `self.scale(contract)` ≡ `self * contract`.
+    fn scale(&self, contract: &PyContract) -> PyContract {
+        PyContract {
+            inner: self.inner.clone().scale(contract.inner.clone()),
+        }
+    }
+
     fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObservable> {
         Ok(PyObservable {
             inner: self.inner.clone() + extract_obs(other)?,
