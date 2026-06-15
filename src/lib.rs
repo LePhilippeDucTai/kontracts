@@ -77,6 +77,12 @@ pub use surface::{greek_surface, GreekSurface};
 
 pub mod products; // J9 (catalogue d'expressions DSL)
 
+pub mod rates; // J24
+pub use rates::{
+    cumulative_discounts, discount_factor, price_under_short_rate, swaption_price_mc, HullWhite,
+    ShortRateModel, Swaption, Vasicek,
+};
+
 pub mod backtest; // J23
 pub use backtest::{
     backtest_delta_hedge, bs_delta, delta_hedge_error, historical_model_prices, model_vs_market,
