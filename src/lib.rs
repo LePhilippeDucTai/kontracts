@@ -77,6 +77,12 @@ pub use surface::{greek_surface, GreekSurface};
 
 pub mod products; // J9 (catalogue d'expressions DSL)
 
+pub mod fx; // J25
+pub use fx::{
+    composite_vol, fx_forward, garman_kohlhagen_call, garman_kohlhagen_put, quanto_call,
+    quanto_put, CorrelatedGbm2, GbmFactor,
+};
+
 pub mod rates; // J24
 pub use rates::{
     cumulative_discounts, discount_factor, price_under_short_rate, swaption_price_mc, HullWhite,

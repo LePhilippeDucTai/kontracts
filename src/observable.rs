@@ -66,6 +66,14 @@ impl Path {
         &self.times
     }
 
+    /// Série complète des spots d'un sous-jacent sur toute la grille.
+    pub fn spot_series(&self, name: &str) -> Result<&[f64], KontractError> {
+        self.spots
+            .get(name)
+            .map(|v| v.as_slice())
+            .ok_or_else(|| KontractError::UnknownAsset(name.to_string()))
+    }
+
     /// Prix spot d'un sous-jacent au pas `t`.
     pub fn spot(&self, name: &str, t: usize) -> Result<f64, KontractError> {
         let series = self
