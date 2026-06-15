@@ -1,9 +1,21 @@
-//! Fast calibration via trust-region optimization (jalon J21-fast).
+//! Calibration de modèles aux prix de marché.
 //!
-//! Lightweight parameter fitting for GBM, Heston, etc.
-//! Target: < 1 sec for 100+ market quotes.
+//! Deux familles d'optimiseurs :
+//!   - **J21-fast** : trust-region léger (mono-paramètre GBM, descente Heston),
+//!     cible < 1 sec pour un fit rapide.
+//!   - **J22** : **CMA-ES** global (cf. [`crate::optimizer`]) pour Heston / SABR /
+//!     Merton, robuste au bruit Monte-Carlo et aux minima locaux. La calibration
+//!     se fait en **common random numbers** (graine MC fixe) → objectif lisse et
+//!     reproductible, et en **espace normalisé** `[0,1]ⁿ` (chaque paramètre
+//!     ramené à l'échelle de ses bornes) pour que le pas global unique de
+//!     CMA-ES traite équitablement des paramètres d'échelles très différentes
+//!     (`κ ≈ 2`, `ρ ≈ −0.5`, `v₀ ≈ 0.04`).
 
-use crate::{pricer::McConfig, Contract, Gbm, HestonSimulator, KontractError};
+use crate::optimizer::{cmaes_minimize, Bounds, CmaesConfig};
+use crate::{
+    pricer::McConfig, Contract, Gbm, HestonSimulator, KontractError, MertonJumpSimulator,
+    SABRSimulator,
+};
 
 /// Configuration for fast calibration.
 #[derive(Debug, Clone)]
@@ -240,4 +252,239 @@ pub fn fit_heston_parameters(
         iterations: config.max_iterations,
         converged,
     })
+}
+
+// ============================================================================
+// J22 — Calibration globale par CMA-ES (Heston / SABR / Merton)
+// ============================================================================
+
+/// Construit la configuration MC en common random numbers (graine fixe).
+fn crn_mc_config(n_paths: usize, rate: f64) -> McConfig {
+    McConfig {
+        n_paths,
+        seed: 42,
+        steps_per_year: 252,
+        rate,
+        variance_reduction: None,
+    }
+}
+
+/// Lance CMA-ES sur un objectif `objective`, en **espace normalisé** délimité par
+/// `[lower, upper]`, depuis le point initial `x0`.
+///
+/// CMA-ES travaille sur `u ∈ [0,1]ⁿ` (chaque coordonnée `u_i` mappée vers
+/// `lower_i + u_i·(upper_i − lower_i)`) ; le résultat est dé-normalisé vers
+/// l'espace des paramètres physiques.
+fn run_cmaes_calibration<O>(
+    x0: Vec<f64>,
+    lower: Vec<f64>,
+    upper: Vec<f64>,
+    max_generations: usize,
+    objective: O,
+) -> CalibrationResult
+where
+    O: Fn(&[f64]) -> f64 + Sync,
+{
+    let n = x0.len();
+    let width: Vec<f64> = upper
+        .iter()
+        .zip(lower.iter())
+        .map(|(&hi, &lo)| (hi - lo).max(1e-12))
+        .collect();
+
+    // Objectif en espace normalisé : dé-normalise puis appelle l'objectif physique.
+    let obj_u = |u: &[f64]| {
+        let param: Vec<f64> = u
+            .iter()
+            .zip(lower.iter())
+            .zip(width.iter())
+            .map(|((&ui, &lo), &w)| lo + ui * w)
+            .collect();
+        objective(&param)
+    };
+
+    let u0: Vec<f64> = x0
+        .iter()
+        .zip(lower.iter())
+        .zip(width.iter())
+        .map(|((&x, &lo), &w)| ((x - lo) / w).clamp(0.0, 1.0))
+        .collect();
+
+    let cfg = CmaesConfig {
+        sigma0: 0.3,
+        max_generations,
+        seed: 42,
+        ..Default::default()
+    };
+    let norm_bounds = Bounds::new(vec![0.0; n], vec![1.0; n]);
+    let res = cmaes_minimize(obj_u, &u0, &norm_bounds, &cfg);
+
+    let parameters: Vec<f64> = res
+        .best_params
+        .iter()
+        .zip(lower.iter())
+        .zip(width.iter())
+        .map(|((&ui, &lo), &w)| lo + ui * w)
+        .collect();
+
+    CalibrationResult {
+        parameters,
+        objective: res.best_objective,
+        iterations: res.generations,
+        converged: res.converged,
+    }
+}
+
+/// MSE de reprise de prix SABR (β fixé).
+#[allow(clippy::too_many_arguments)] // paramètres SABR explicites (α, β, ν, ρ) + contexte
+fn eval_obj_sabr(
+    contract: &Contract,
+    market_prices: &[(f64, f64)],
+    alpha: f64,
+    beta: f64,
+    nu: f64,
+    rho: f64,
+    rate: f64,
+    mc_config: &McConfig,
+) -> f64 {
+    let sum_sq: f64 = market_prices
+        .iter()
+        .filter_map(|&(spot, market_price)| {
+            let sabr = SABRSimulator::new("underlying", spot, alpha, beta, nu, rho, rate);
+            crate::pricer::price_gbm(contract, &sabr, mc_config)
+                .ok()
+                .map(|result| (result.price - market_price).powi(2))
+        })
+        .sum();
+    sum_sq / market_prices.len() as f64
+}
+
+/// MSE de reprise de prix Merton (saut-diffusion).
+#[allow(clippy::too_many_arguments)] // paramètres Merton explicites (σ, λ, μ_j, σ_j) + contexte
+fn eval_obj_merton(
+    contract: &Contract,
+    market_prices: &[(f64, f64)],
+    sigma: f64,
+    lambda: f64,
+    mu_j: f64,
+    sigma_j: f64,
+    rate: f64,
+    mc_config: &McConfig,
+) -> f64 {
+    let sum_sq: f64 = market_prices
+        .iter()
+        .filter_map(|&(spot, market_price)| {
+            let merton =
+                MertonJumpSimulator::new("underlying", spot, rate, sigma, lambda, mu_j, sigma_j);
+            crate::pricer::price_gbm(contract, &merton, mc_config)
+                .ok()
+                .map(|result| (result.price - market_price).powi(2))
+        })
+        .sum();
+    sum_sq / market_prices.len() as f64
+}
+
+/// Calibre les 5 paramètres de **Heston** `[v0, κ, θ, σ_v, ρ]` par CMA-ES.
+///
+/// Bornes admissibles : `v0,θ ∈ [1e-3, 1]`, `κ ∈ [0.1, 10]`, `σ_v ∈ [0.01, 2]`,
+/// `ρ ∈ [−0.99, 0.99]`. Critère minimisé : MSE de reprise des prix de marché.
+///
+/// Note (identifiabilité) : depuis peu de quotes, les 5 paramètres ne sont pas
+/// tous individuellement identifiables — la **reprise de prix** (objectif) est la
+/// quantité robuste, le round-trip paramétrique exact requiert une surface riche.
+pub fn calibrate_heston_cmaes(
+    contract: &Contract,
+    market_prices: &[(f64, f64)],
+    rate: f64,
+    config: &FastCalibrationConfig,
+) -> Result<CalibrationResult, KontractError> {
+    let mc_config = crn_mc_config(config.n_paths, rate);
+    let x0 = vec![0.04, 2.0, 0.04, 0.3, -0.5];
+    let lower = vec![0.001, 0.1, 0.001, 0.01, -0.99];
+    let upper = vec![1.0, 10.0, 1.0, 2.0, 0.99];
+
+    let objective = |p: &[f64]| eval_obj_heston(contract, market_prices, p, rate, &mc_config);
+    Ok(run_cmaes_calibration(
+        x0,
+        lower,
+        upper,
+        config.max_iterations,
+        objective,
+    ))
+}
+
+/// Calibre **SABR** `[α, ν, ρ]` à `β` **fixé** (pratique de marché) par CMA-ES.
+///
+/// Le vecteur retourné est `[α, β, ν, ρ]` (β recopié) pour reconstruire
+/// directement un [`SABRSimulator`]. Bornes : `α ∈ [1e-3, 2]`, `ν ∈ [1e-3, 3]`,
+/// `ρ ∈ [−0.99, 0.99]`.
+pub fn calibrate_sabr_cmaes(
+    contract: &Contract,
+    market_prices: &[(f64, f64)],
+    rate: f64,
+    beta: f64,
+    config: &FastCalibrationConfig,
+) -> Result<CalibrationResult, KontractError> {
+    let mc_config = crn_mc_config(config.n_paths, rate);
+    let x0 = vec![0.2, 0.4, -0.3];
+    let lower = vec![0.001, 0.001, -0.99];
+    let upper = vec![2.0, 3.0, 0.99];
+
+    let objective = |p: &[f64]| {
+        eval_obj_sabr(
+            contract,
+            market_prices,
+            p[0],
+            beta,
+            p[1],
+            p[2],
+            rate,
+            &mc_config,
+        )
+    };
+    let mut result = run_cmaes_calibration(x0, lower, upper, config.max_iterations, objective);
+    // Réinsère β (fixé) pour obtenir [α, β, ν, ρ].
+    result.parameters = vec![
+        result.parameters[0],
+        beta,
+        result.parameters[1],
+        result.parameters[2],
+    ];
+    Ok(result)
+}
+
+/// Calibre les 4 paramètres de **Merton** `[σ, λ, μ_j, σ_j]` par CMA-ES.
+///
+/// Bornes : `σ ∈ [0.01, 1]`, `λ ∈ [0, 5]`, `μ_j ∈ [−0.5, 0.5]`,
+/// `σ_j ∈ [0.01, 1]`.
+pub fn calibrate_merton_cmaes(
+    contract: &Contract,
+    market_prices: &[(f64, f64)],
+    rate: f64,
+    config: &FastCalibrationConfig,
+) -> Result<CalibrationResult, KontractError> {
+    let mc_config = crn_mc_config(config.n_paths, rate);
+    let x0 = vec![0.2, 1.0, -0.1, 0.2];
+    let lower = vec![0.01, 0.0, -0.5, 0.01];
+    let upper = vec![1.0, 5.0, 0.5, 1.0];
+
+    let objective = |p: &[f64]| {
+        eval_obj_merton(
+            contract,
+            market_prices,
+            p[0],
+            p[1],
+            p[2],
+            p[3],
+            rate,
+            &mc_config,
+        )
+    };
+    Ok(run_cmaes_calibration(
+        x0,
+        lower,
+        upper,
+        config.max_iterations,
+        objective,
+    ))
 }

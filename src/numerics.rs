@@ -234,3 +234,100 @@ pub fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, K
     }
     Ok(x)
 }
+
+// ============================================================================
+// Décomposition spectrale (Jacobi symétrique) — J22
+// ============================================================================
+
+/// Diagonalise une matrice **symétrique** `a` (n×n) par rotations de Jacobi.
+///
+/// Renvoie `(valeurs_propres, vecteurs_propres)` où `vecteurs_propres[k]` est le
+/// k-ième vecteur propre (colonne `k` de la matrice de rotation accumulée `V`),
+/// associé à `valeurs_propres[k]`. La reconstruction vaut `a = V · diag(λ) · Vᵀ`.
+///
+/// La méthode de Jacobi est inconditionnellement convergente pour les matrices
+/// symétriques et précise pour les **petites dimensions** (n ≤ 6, le cas des
+/// covariances CMA-ES : Heston 5 paramètres, SABR 4, Merton 5). Coût `O(n³)` par
+/// balayage, quelques balayages suffisent (convergence quadratique en fin de
+/// course). Aucune dépendance LAPACK.
+#[allow(clippy::needless_range_loop)] // rotations de Jacobi : indexation matricielle volontaire
+pub fn jacobi_eigen(a: &[Vec<f64>]) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let n = a.len();
+    // Copie de travail (la matrice est progressivement diagonalisée).
+    let mut m = a.to_vec();
+    // Matrice des vecteurs propres, initialisée à l'identité.
+    let mut v: Vec<Vec<f64>> = (0..n)
+        .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+        .collect();
+
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+    // Balayages de Jacobi : annulation itérative des éléments hors-diagonale par
+    // rotations de Givens, avec accumulation des vecteurs propres dans `v`.
+    // Échelle de la matrice (norme de Frobenius) pour un seuil d'arrêt **relatif** :
+    // on stoppe quand la masse hors-diagonale est négligeable devant l'échelle, ce
+    // qui reste robuste pour des covariances anisotropes (mal conditionnées).
+    let frob: f64 = (0..n)
+        .flat_map(|i| (0..n).map(move |j| (i, j)))
+        .map(|(i, j)| m[i][j] * m[i][j])
+        .sum::<f64>()
+        .sqrt();
+    let off_tol = (1e-14 * frob).max(1e-300);
+    for _sweep in 0..100 {
+        // Magnitude hors-diagonale (critère d'arrêt relatif à l'échelle).
+        let off: f64 = (0..n)
+            .flat_map(|p| ((p + 1)..n).map(move |q| (p, q)))
+            .map(|(p, q)| m[p][q] * m[p][q])
+            .sum::<f64>()
+            .sqrt();
+        if off < off_tol {
+            break;
+        }
+
+        for p in 0..n {
+            for q in (p + 1)..n {
+                let apq = m[p][q];
+                // Saute les éléments négligeables devant l'échelle de la diagonale.
+                if apq.abs() <= 1e-300 * (m[p][p].abs() + m[q][q].abs() + 1.0) {
+                    continue;
+                }
+                // Angle de rotation annulant m[p][q] (formulation stable de Rutishauser).
+                let theta = (m[q][q] - m[p][p]) / (2.0 * apq);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+
+                // Mise à jour des diagonales et annulation de l'élément (p, q).
+                let app = m[p][p];
+                let aqq = m[q][q];
+                m[p][p] = app - t * apq;
+                m[q][q] = aqq + t * apq;
+                m[p][q] = 0.0;
+                m[q][p] = 0.0;
+
+                // Rotation des autres éléments des lignes/colonnes p et q.
+                for i in 0..n {
+                    if i != p && i != q {
+                        let mip = m[i][p];
+                        let miq = m[i][q];
+                        m[i][p] = c * mip - s * miq;
+                        m[p][i] = m[i][p];
+                        m[i][q] = s * mip + c * miq;
+                        m[q][i] = m[i][q];
+                    }
+                }
+                // Accumulation des vecteurs propres.
+                for i in 0..n {
+                    let vip = v[i][p];
+                    let viq = v[i][q];
+                    v[i][p] = c * vip - s * viq;
+                    v[i][q] = s * vip + c * viq;
+                }
+            }
+        }
+    }
+
+    let eigenvalues: Vec<f64> = (0..n).map(|i| m[i][i]).collect();
+    // Vecteurs propres en colonnes de `v` → renvoyés indexés par k (colonne k).
+    let eigenvectors: Vec<Vec<f64>> = (0..n).map(|k| (0..n).map(|i| v[i][k]).collect()).collect();
+    (eigenvalues, eigenvectors)
+}
