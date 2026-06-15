@@ -121,6 +121,7 @@ impl PdeSolver {
         F: Fn(f64) -> f64,
     {
         let mut v = Array1::from_vec(self.space_grid.iter().map(|&s| payoff_fn(s)).collect());
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for _ in 0..self.cfg.n_time {
             v = self.cn_step(&v, false)?;
         }
@@ -135,6 +136,7 @@ impl PdeSolver {
         let payoff = Array1::from_vec(self.space_grid.iter().map(|&s| payoff_fn(s)).collect());
         let mut v = payoff.clone();
 
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for _ in 0..self.cfg.n_time {
             v = self.cn_step(&v, true)?;
             // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
@@ -203,6 +205,7 @@ impl PdeSolver {
             let payoff = v_old.clone();
             let mut v_new = v_old.clone();
 
+            // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
             for _ in 0..self.cfg.psor_max_iterations {
                 let mut res_max: f64 = 0.0;
 

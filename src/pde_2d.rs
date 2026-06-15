@@ -144,6 +144,7 @@ impl Pde2dSolver {
         }
 
         // Backward time-stepping via ADI
+        // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
         for _ in 0..nt {
             // S-sweep: solve along S direction
             v = self.adi_s_sweep(&v)?;

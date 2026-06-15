@@ -184,6 +184,7 @@ pub fn implied_volatility(
     }
 
     // Bisection: find vol such that bs_call(vol) ≈ call_price.
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
     for _ in 0..100 {
         let vol_mid = (vol_low + vol_high) / 2.0;
         let price_mid =

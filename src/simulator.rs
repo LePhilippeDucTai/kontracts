@@ -1228,6 +1228,7 @@ impl MertonJumpSimulator {
                 // Sauts de Poisson composés
                 // Nombre de sauts : simulation par inversion de la CDF de Poisson
                 let n_jumps = poisson_sample(self.lambda * dt, rng);
+                // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
                 for _ in 0..n_jumps {
                     let zj: f64 = rng.sample(StandardNormal);
                     // ln J_i ~ N(mu_ln, sigma_j²)
