@@ -20,6 +20,7 @@ fn deterministic_payoff_has_zero_error() {
         seed: 1,
         steps_per_year: 1,
         rate: 0.05,
+        variance_reduction: None,
     };
     let res = price_gbm(&when(at(1.0), one("USD")), &model, &cfg).unwrap();
     assert!(res.sample_std < 1e-12);
@@ -37,6 +38,7 @@ fn stochastic_call_has_positive_error_and_bracketing_ci() {
         seed: 7,
         steps_per_year: 1,
         rate: 0.05,
+        variance_reduction: None,
     };
     let res = price_gbm(&european_call("AAPL", 100.0, 1.0), &model, &cfg).unwrap();
 
@@ -56,6 +58,7 @@ fn ci_contains_black_scholes_price() {
         seed: 2024,
         steps_per_year: 1,
         rate: 0.05,
+        variance_reduction: None,
     };
     let res = price_gbm(&european_call("AAPL", 100.0, 1.0), &model, &cfg).unwrap();
     let bs = 10.450_583_572_185_565;
@@ -75,6 +78,7 @@ fn paths_for_tolerance_scales_quadratically() {
         seed: 11,
         steps_per_year: 1,
         rate: 0.05,
+        variance_reduction: None,
     };
     let res = price_gbm(&european_call("AAPL", 100.0, 1.0), &model, &cfg).unwrap();
 
@@ -94,6 +98,7 @@ fn paths_for_tolerance_is_zero_for_deterministic() {
         seed: 1,
         steps_per_year: 1,
         rate: 0.0,
+        variance_reduction: None,
     };
     let res = price_gbm(&Contract::Zero, &model, &cfg).unwrap();
     assert_eq!(res.paths_for_tolerance(0.01), 0);

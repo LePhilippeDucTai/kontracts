@@ -13,25 +13,62 @@
 mod error;
 pub use error::KontractError;
 
+pub mod numerics; // Numerical primitives (centralized)
+
 pub mod ast; // J1
 pub use ast::{Condition, Contract, Currency, Observable};
 
 pub mod observable; // J2
 pub use observable::Path;
 
-pub mod simulator; // J3
-pub use simulator::Gbm;
+pub mod simulator; // J3, J12, J13, J14
+pub use simulator::{
+    dupire_from_gbm_calls, heston_from_params, merton_from_params, rough_bergomi_from_params,
+    sabr_from_params, DupireSimulator, Gbm, HestonSimulator, MertonJumpSimulator,
+    RoughBergomiSimulator, SABRSimulator, Simulator,
+};
 
 pub mod compiler; // J4
 pub use compiler::{compile, Plan};
 
 pub mod pricer; // J5
-pub use pricer::{price_batch_gbm, price_gbm, price_on_paths, McConfig, PriceResult};
+pub use pricer::{
+    present_value_pub, price_batch_gbm, price_gbm, price_on_paths, McConfig, PriceResult,
+};
+
+pub mod variance_reduction; // J15
+pub use variance_reduction::VarianceReductionConfig;
+
+pub mod sobol_simulator; // J16
+pub use sobol_simulator::{SobolGbm, SobolSimulator};
+
+pub mod lsm; // J17
+pub use lsm::{price_american_lsm, LsmConfig};
+
+pub mod mlmc; // J18
+pub use mlmc::{
+    estimate_variance_at_level, optimal_allocation, price_mlmc, price_mlmc_detailed, MlmcConfig,
+    MlmcResult,
+};
+
+pub mod market_data; // J21
+pub use market_data::{
+    build_surface, implied_volatility, load_csv, OptionQuote, VolatilitySurface,
+};
+
+pub mod calibration; // J21-fast
+pub use calibration::{
+    fit_gbm_volatility, fit_heston_parameters, CalibrationResult, FastCalibrationConfig,
+};
 
 pub mod greeks; // J7
 pub use greeks::{greeks_gbm, BumpSizes, Greeks};
 
+pub mod pde; // J19
+pub mod pde_2d; // J20
 pub mod surface; // J7b
+pub use pde::{PdeConfig, PdeSolver};
+pub use pde_2d::{Pde2dConfig, Pde2dSolver};
 pub use surface::{greek_surface, GreekSurface};
 
 pub mod products; // J9 (catalogue d'expressions DSL)
