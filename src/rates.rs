@@ -49,7 +49,7 @@ use rand_distr::StandardNormal;
 ///
 /// Le pricer (jalon J24) n'utilise que cette interface : il sait simuler le taux
 /// court le long d'une grille et reconstruire un zéro-coupon analytique.
-pub trait ShortRateModel: Sync {
+pub trait ShortRateModel: Send + Sync {
     /// Simule `n_paths` trajectoires du taux court sur `grid`.
     ///
     /// Renvoie un `Array2` de forme `[n_paths, grid.len()]`, `r(0) = r₀` en

@@ -297,8 +297,9 @@ fn norm_cdf_test(x: f64) -> f64 {
     const A5: f64 = 1.061405429;
     const P: f64 = 0.3275911;
 
+    // N(x) = ½(1 + erf(x/√2)) : appliquer l'approximation A&S de erf à x/√2.
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x = x.abs();
+    let x = x.abs() / std::f64::consts::SQRT_2;
     let t = 1.0 / (1.0 + P * x);
     let y = 1.0 - (((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t * (-x * x).exp());
 

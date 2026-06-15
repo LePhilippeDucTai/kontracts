@@ -204,22 +204,11 @@ pub fn implied_volatility(
     Ok((vol_low + vol_high) / 2.0)
 }
 
-/// Standard normal CDF (Abramowitz-Stegun approximation — market data local version).
-/// Kept local for IV inversion precision (uses direct formula with coefficient P,not erfc).
+/// CDF normale standard. Délègue au noyau central [`crate::numerics::norm_cdf`]
+/// (correct : `N(x) = ½(1 + erf(x/√2))`). L'ancienne version locale oubliait le
+/// facteur `1/√2` → vol implicite biaisée (corrigé).
 fn norm_cdf(x: f64) -> f64 {
-    const A1: f64 = 0.254829592;
-    const A2: f64 = -0.284496736;
-    const A3: f64 = 1.421413741;
-    const A4: f64 = -1.453152027;
-    const A5: f64 = 1.061405429;
-    const P: f64 = 0.3275911;
-
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x = x.abs();
-    let t = 1.0 / (1.0 + P * x);
-    let y = 1.0 - (((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t * (-x * x).exp());
-
-    (1.0 + sign * y) / 2.0
+    crate::numerics::norm_cdf(x)
 }
 
 /// Simple Black-Scholes call price (for IV inversion).
