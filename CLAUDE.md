@@ -40,6 +40,24 @@ zero | one(ccy) | give(c) | and(c1,c2) | or(c1,c2)
 - Tests : un fichier par primitive dans `tests/`, produits composés dans
   `tests/products/`.
 
+## Style de programmation — Approche fonctionnelle
+
+**Programmation fonctionnelle stricte** : code sans effets de bord autant que possible.
+
+- **Interdiction des boucles `for`** : remplacer par `iter()`, `map()`, `fold()`, `filter()`, `par_iter()` (rayon).
+  - ❌ `for i in 0..n { v[i] = ... }`
+  - ✅ `v.iter_mut().enumerate().for_each(|(i, x)| *x = ...)`  ou `Array::from_shape_fn(...)`
+- **Pas de mutation gratuite** : préférer la construction immutable à la modification en place.
+- **Composition d'opérateurs** : chaîner `map`, `filter`, `fold` plutôt que d'accumuler l'état.
+- **`Result` et `Option`** : utiliser `?`, `and_then()`, `map_err()`, `unwrap_or()` au lieu de branchements.
+- **Données immutables par défaut** : `let` sans `mut`, destructurer avec `_` quand inutilisé.
+- **Accumulation** : `fold(init, |acc, x| ...)` plutôt que `let mut acc; for x in ... { acc = ... }`.
+
+Exceptions autorisées (justifiées au cas par cas) :
+- Boucles imbriquées très complexes pour la lisibilité (algorithmes numériques 2D/3D).
+- Mutations dans les tests (setup, assertions).
+- Hot loops critiques pour la perf (après profiling — commenter : `// mutation pour perf`).
+
 ## Discipline de jalon (IMPORTANT)
 
 À chaque exécution de `/loop` :
