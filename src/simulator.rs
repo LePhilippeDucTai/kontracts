@@ -512,20 +512,10 @@ impl Simulator for HestonSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
-        validate_grid(times)?;
-        let n_steps = times.len();
-
-        let mut data = vec![0.0f64; n_paths * n_steps];
-        data.par_chunks_mut(n_steps.max(1))
-            .enumerate()
-            .for_each(|(i, row)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
-                let path = self.simulate_one_path(times, &mut rng);
-                row.copy_from_slice(&path);
-            });
-
-        Array2::from_shape_vec((n_paths, n_steps), data)
-            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+        let times_copy = times.to_vec();
+        generic_simulate(times, n_paths, seed, move |_i, rng| {
+            self.simulate_one_path(&times_copy, rng)
+        })
     }
 
     fn asset_name(&self) -> &str {
@@ -718,20 +708,10 @@ impl Simulator for DupireSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
-        validate_grid(times)?;
-        let n_steps = times.len();
-
-        let mut data = vec![0.0f64; n_paths * n_steps];
-        data.par_chunks_mut(n_steps.max(1))
-            .enumerate()
-            .for_each(|(i, row)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
-                let path = self.simulate_one_path(times, &mut rng);
-                row.copy_from_slice(&path);
-            });
-
-        Array2::from_shape_vec((n_paths, n_steps), data)
-            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+        let times_copy = times.to_vec();
+        generic_simulate(times, n_paths, seed, move |_i, rng| {
+            self.simulate_one_path(&times_copy, rng)
+        })
     }
 
     fn asset_name(&self) -> &str {
@@ -1017,20 +997,10 @@ impl Simulator for SABRSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
-        validate_grid(times)?;
-        let n_steps = times.len();
-
-        let mut data = vec![0.0f64; n_paths * n_steps];
-        data.par_chunks_mut(n_steps.max(1))
-            .enumerate()
-            .for_each(|(i, row)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
-                let path = self.simulate_one_path(times, &mut rng);
-                row.copy_from_slice(&path);
-            });
-
-        Array2::from_shape_vec((n_paths, n_steps), data)
-            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+        let times_copy = times.to_vec();
+        generic_simulate(times, n_paths, seed, move |_i, rng| {
+            self.simulate_one_path(&times_copy, rng)
+        })
     }
 
     fn asset_name(&self) -> &str {
@@ -1171,20 +1141,10 @@ impl Simulator for MertonJumpSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
-        validate_grid(times)?;
-        let n_steps = times.len();
-
-        let mut data = vec![0.0f64; n_paths * n_steps];
-        data.par_chunks_mut(n_steps.max(1))
-            .enumerate()
-            .for_each(|(i, row)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
-                let path = self.simulate_one_path(times, &mut rng);
-                row.copy_from_slice(&path);
-            });
-
-        Array2::from_shape_vec((n_paths, n_steps), data)
-            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+        let times_copy = times.to_vec();
+        generic_simulate(times, n_paths, seed, move |_i, rng| {
+            self.simulate_one_path(&times_copy, rng)
+        })
     }
 
     fn asset_name(&self) -> &str {
@@ -1496,24 +1456,14 @@ impl Simulator for RoughBergomiSimulator {
         n_paths: usize,
         seed: u64,
     ) -> Result<Array2<f64>, KontractError> {
-        validate_grid(times)?;
-        let n_steps = times.len();
-
+        let times_copy = times.to_vec();
         // Factorisation de Cholesky calculée **une seule fois** et partagée par
         // toutes les trajectoires (c'est le coût O(n²) amorti du Rough Bergomi).
         let chol = self.fbm_cholesky(times);
 
-        let mut data = vec![0.0f64; n_paths * n_steps];
-        data.par_chunks_mut(n_steps.max(1))
-            .enumerate()
-            .for_each(|(i, row)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
-                let path = self.simulate_one_path(times, &chol, &mut rng);
-                row.copy_from_slice(&path);
-            });
-
-        Array2::from_shape_vec((n_paths, n_steps), data)
-            .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+        generic_simulate(times, n_paths, seed, move |_i, rng| {
+            self.simulate_one_path(&times_copy, &chol, rng)
+        })
     }
 
     fn asset_name(&self) -> &str {
@@ -1536,6 +1486,43 @@ pub fn rough_bergomi_from_params(
 }
 
 // Cholesky decomposition is centralized in numerics module
+
+// ============================================================================
+// Helper générique pour les simulateurs (boilerplate réduit)
+// ============================================================================
+
+/// Exécute le boilerplate commun de simulation : validation, parallélisation,
+/// seeding, et construction de Array2.
+///
+/// # Paramètres
+/// - `times` : grille de temps
+/// - `n_paths` : nombre de trajectoires
+/// - `seed` : graine globale (mélangée par index pour reproductibilité)
+/// - `sim_one` : closure qui produit une trajectoire : `Fn(chemin_idx, rng) -> Vec<f64>`
+pub(crate) fn generic_simulate<F>(
+    times: &[f64],
+    n_paths: usize,
+    seed: u64,
+    sim_one: F,
+) -> Result<Array2<f64>, KontractError>
+where
+    F: Fn(usize, &mut ChaCha8Rng) -> Vec<f64> + Send + Sync,
+{
+    validate_grid(times)?;
+    let n_steps = times.len();
+
+    let mut data = vec![0.0f64; n_paths * n_steps];
+    data.par_chunks_mut(n_steps.max(1))
+        .enumerate()
+        .for_each(|(i, row)| {
+            let mut rng = ChaCha8Rng::seed_from_u64(mix(seed, i as u64));
+            let path = sim_one(i, &mut rng);
+            row.copy_from_slice(&path);
+        });
+
+    Array2::from_shape_vec((n_paths, n_steps), data)
+        .map_err(|e| KontractError::InconsistentPath(e.to_string()))
+}
 
 // ============================================================================
 // Utilitaires communs aux simulateurs J12
