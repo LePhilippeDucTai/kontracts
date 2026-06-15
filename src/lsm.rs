@@ -140,27 +140,35 @@ fn backward_induction(
 
     // Payoff immédiat de chaque path à chaque date d'exercice (valeur **à la date**).
     // payoff[d][i] = valeur du contrat exercé à la date ex_idx[d] sur le path i.
-    let mut payoff = vec![vec![0.0f64; n_paths]; n_ex];
-    for (d, &ti) in ex_idx.iter().enumerate() {
-        let col: Result<Vec<f64>, KontractError> = paths
-            .par_iter()
-            .map(|p| value_at(contract, p, grid, ti, rate))
-            .collect();
-        payoff[d] = col?;
-    }
+    // Construction immutable : une colonne (parallélisée sur les paths) par date.
+    let payoff: Vec<Vec<f64>> = ex_idx
+        .iter()
+        .map(|&ti| {
+            paths
+                .par_iter()
+                .map(|p| value_at(contract, p, grid, ti, rate))
+                .collect::<Result<Vec<f64>, KontractError>>()
+        })
+        .collect::<Result<Vec<Vec<f64>>, KontractError>>()?;
 
     // Spot du sous-jacent à chaque date d'exercice (base de la régression).
-    let mut spots = vec![vec![0.0f64; n_paths]; n_ex];
-    for (d, &ti) in ex_idx.iter().enumerate() {
-        let col: Result<Vec<f64>, KontractError> =
-            paths.iter().map(|p| p.spot(asset, ti)).collect();
-        spots[d] = col?;
-    }
+    let spots: Vec<Vec<f64>> = ex_idx
+        .iter()
+        .map(|&ti| {
+            paths
+                .iter()
+                .map(|p| p.spot(asset, ti))
+                .collect::<Result<Vec<f64>, KontractError>>()
+        })
+        .collect::<Result<Vec<Vec<f64>>, KontractError>>()?;
 
     // `value[i]` : valeur du contrat américain le long du path i, **mesurée à la
     // date d'exercice courante** au fil du backward. Initialisée à la dernière date.
-    let mut value = payoff[n_ex - 1].clone();
+    let mut value = payoff[n_ex - 1].clone(); // réassigné (non muté) à chaque pas backward
 
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+    // Backward induction LSM : `value` à la date `d` dépend de la valeur réalisée
+    // à la date `d+1` (récurrence séquentielle, non parallélisable sur `d`).
     // Remonte de l'avant-dernière date d'exercice vers la première.
     for d in (0..n_ex - 1).rev() {
         let t_now = grid[ex_idx[d]];
@@ -190,24 +198,28 @@ fn backward_induction(
             None
         };
 
-        for i in 0..n_paths {
-            if payoff[d][i] > 0.0 {
-                let continuation = match &coeffs {
-                    Some(c) => poly_eval(c, spots[d][i]),
-                    None => discounted[i],
-                };
-                // Exercice optimal : exerce si le payoff immédiat domine l'estimation
-                // de continuation. Sinon, conserve la valeur future actualisée.
-                if payoff[d][i] > continuation {
-                    value[i] = payoff[d][i];
+        // Mise à jour de la valeur de chaque path : décision indépendante par path
+        // (à `d` fixé), donc construction immutable d'une nouvelle colonne `value`.
+        value = (0..n_paths)
+            .map(|i| {
+                if payoff[d][i] > 0.0 {
+                    let continuation = match &coeffs {
+                        Some(c) => poly_eval(c, spots[d][i]),
+                        None => discounted[i],
+                    };
+                    // Exercice optimal : exerce si le payoff immédiat domine
+                    // l'estimation de continuation. Sinon, valeur future actualisée.
+                    if payoff[d][i] > continuation {
+                        payoff[d][i]
+                    } else {
+                        discounted[i]
+                    }
                 } else {
-                    value[i] = discounted[i];
+                    // Hors de la monnaie : pas d'exercice, on continue.
+                    discounted[i]
                 }
-            } else {
-                // Hors de la monnaie : pas d'exercice, on continue.
-                value[i] = discounted[i];
-            }
-        }
+            })
+            .collect();
     }
 
     // Actualisation de la première date d'exercice jusqu'à t = 0.
@@ -255,6 +267,9 @@ fn poly_fit(xs: &[f64], ys: &[f64], n_basis: usize) -> Result<Vec<f64>, Kontract
     // Pré-allouer le buffer des puissances une fois (réutilisé par itération).
     let mut powers = vec![1.0f64; m];
 
+    // noyau numérique : boucle conservée (cf. CLAUDE.md exceptions)
+    // Accumulation matricielle AᵀA / Aᵀy (Vandermonde implicite) avec réutilisation
+    // du buffer `powers` (perf) ; boucles 2D imbriquées laissées en place.
     for k in 0..n {
         // Puissances de x : [1, x, x², …]
         powers[0] = 1.0;
