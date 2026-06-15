@@ -252,9 +252,12 @@ fn poly_fit(xs: &[f64], ys: &[f64], n_basis: usize) -> Result<Vec<f64>, Kontract
     let mut ata = vec![vec![0.0f64; m]; m];
     let mut aty = vec![0.0f64; m];
 
+    // Pré-allouer le buffer des puissances une fois (réutilisé par itération).
+    let mut powers = vec![1.0f64; m];
+
     for k in 0..n {
         // Puissances de x : [1, x, x², …]
-        let mut powers = vec![1.0f64; m];
+        powers[0] = 1.0;
         for j in 1..m {
             powers[j] = powers[j - 1] * xs[k];
         }
