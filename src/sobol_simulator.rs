@@ -45,46 +45,37 @@ fn u01_to_normal(u: f64) -> f64 {
     }
 }
 
+/// Calcule la séquence de Van der Corput en base 2 (bit-reversal) pour un entier `n`.
+fn van_der_corput(n: u32) -> f64 {
+    // Fold sur les états successifs (bits_restants, poids_courant) jusqu'à épuisement.
+    std::iter::successors((n != 0).then_some((n, 0.5_f64)), |&(bits, f)| {
+        (bits >> 1 != 0).then_some((bits >> 1, f * 0.5))
+    })
+    .fold(
+        0.0_f64,
+        |acc, (bits, f)| {
+            if bits & 1 == 1 {
+                acc + f
+            } else {
+                acc
+            }
+        },
+    )
+}
+
 /// Generate Sobol sequence (simple implementation via bit-reversal).
 /// Returns n_paths × n_steps matrix of standard normal samples.
 fn sobol_normal_matrix(n_paths: usize, n_steps: usize) -> Array2<f64> {
-    let mut data = vec![0.0f64; n_paths * n_steps];
-
-    // Simple bit-reversal based Sobol generation
-    for i in 0..n_paths {
-        for j in 0..n_steps {
-            // Van der Corput sequence in base 2 (bit-reversal)
-            let mut u = 0.0;
-            let mut f = 0.5;
-            let mut n = i as u32;
-            while n > 0 {
-                if n & 1 == 1 {
-                    u += f;
-                }
-                f *= 0.5;
-                n >>= 1;
-            }
-
-            // Mix with second dimension (simple approach: XOR with step index)
-            let mut v = 0.0;
-            let mut f = 0.5;
-            let mut m = (j as u32) ^ (i as u32);
-            while m > 0 {
-                if m & 1 == 1 {
-                    v += f;
-                }
-                f *= 0.5;
-                m >>= 1;
-            }
-
-            // Combine and convert to normal
-            let combined = (u + v) * 0.5;
-            let combined = if combined >= 1.0 { 0.999_999 } else { combined };
-            data[i * n_steps + j] = u01_to_normal(combined);
-        }
-    }
-
-    Array2::from_shape_vec((n_paths, n_steps), data).expect("Sobol matrix shape mismatch")
+    // Simple bit-reversal based Sobol generation via from_shape_fn (sans boucles for).
+    Array2::from_shape_fn((n_paths, n_steps), |(i, j)| {
+        // Van der Corput sequence in base 2 (bit-reversal) pour la dimension path.
+        let u = van_der_corput(i as u32);
+        // Mix with second dimension (simple approach: XOR with step index).
+        let v = van_der_corput((j as u32) ^ (i as u32));
+        // Combine and convert to normal.
+        let combined = ((u + v) * 0.5).min(0.999_999);
+        u01_to_normal(combined)
+    })
 }
 
 /// Generic Sobol-based simulator wrapper.
@@ -168,20 +159,28 @@ impl SobolGbm {
         data.par_chunks_mut(n_steps.max(1))
             .enumerate()
             .for_each(|(i, row)| {
-                let mut s = self.s0;
-                let mut prev_t = 0.0_f64;
-
-                for (k, &t) in times.iter().enumerate() {
-                    let dt = t - prev_t;
-                    if dt > 0.0 {
-                        let z = sobol_normals[(i, k)];
-                        let drift = (self.mu - 0.5 * self.sigma * self.sigma) * dt;
-                        let diffusion = self.sigma * dt.sqrt() * z;
-                        s *= (drift + diffusion).exp();
-                    }
-                    row[k] = s;
-                    prev_t = t;
-                }
+                // Récurrence GBM : scan accumule l'état (s, prev_t) à travers les pas.
+                let mu = self.mu;
+                let sigma = self.sigma;
+                let s0 = self.s0;
+                times
+                    .iter()
+                    .enumerate()
+                    .scan((s0, 0.0_f64), |state, (k, &t)| {
+                        let (s, prev_t) = *state;
+                        let dt = t - prev_t;
+                        let s_new = if dt > 0.0 {
+                            let z = sobol_normals[(i, k)];
+                            let drift = (mu - 0.5 * sigma * sigma) * dt;
+                            let diffusion = sigma * dt.sqrt() * z;
+                            s * (drift + diffusion).exp()
+                        } else {
+                            s
+                        };
+                        *state = (s_new, t);
+                        Some((k, s_new))
+                    })
+                    .for_each(|(k, s)| row[k] = s);
             });
 
         Array2::from_shape_vec((n_paths, n_steps), data)

@@ -128,7 +128,7 @@ pub fn price_mlmc_detailed(
     let mut sumsq = vec![0.0f64; l_max + 1];
     let mut counts = vec![0usize; l_max + 1];
 
-    for (l, item) in variances.iter_mut().enumerate() {
+    variances.iter_mut().enumerate().try_for_each(|(l, item)| {
         let ys = level_samples(contract, model, l, mlmc_cfg.pilot_paths, cfg, t_max)?;
         let (mean, var) = mean_var(&ys);
         means[l] = mean;
@@ -136,27 +136,32 @@ pub fn price_mlmc_detailed(
         sums[l] = ys.iter().sum();
         sumsq[l] = ys.iter().map(|y| y * y).sum();
         counts[l] = ys.len();
-    }
+        Ok::<(), KontractError>(())
+    })?;
 
     // ── 2. Allocation optimale N_ℓ ───────────────────────────────────────────
     let extra = optimal_allocation(&variances, &costs, mlmc_cfg.target_variance);
 
     // ── 3. Run principal : trajectoires supplémentaires par niveau ───────────
-    for (l, &n_extra) in extra.iter().enumerate() {
-        if n_extra == 0 {
-            continue;
-        }
-        // Graine décalée pour éviter de réutiliser le run pilote.
-        let mut cfg_main = cfg.clone();
-        cfg_main.seed = cfg.seed ^ 0xA5A5_5A5A_DEAD_BEEF;
-        let ys = level_samples(contract, model, l, n_extra, &cfg_main, t_max)?;
-        sums[l] += ys.iter().sum::<f64>();
-        sumsq[l] += ys.iter().map(|y| y * y).sum::<f64>();
-        counts[l] += ys.len();
-    }
+    // Graine décalée pour éviter de réutiliser le run pilote.
+    let cfg_main = McConfig {
+        seed: cfg.seed ^ 0xA5A5_5A5A_DEAD_BEEF,
+        ..cfg.clone()
+    };
+    extra
+        .iter()
+        .enumerate()
+        .filter(|(_, &n_extra)| n_extra > 0)
+        .try_for_each(|(l, &n_extra)| {
+            let ys = level_samples(contract, model, l, n_extra, &cfg_main, t_max)?;
+            sums[l] += ys.iter().sum::<f64>();
+            sumsq[l] += ys.iter().map(|y| y * y).sum::<f64>();
+            counts[l] += ys.len();
+            Ok::<(), KontractError>(())
+        })?;
 
     // Fusion pilote + principal → moments par niveau définitifs.
-    for l in 0..=l_max {
+    (0..=l_max).for_each(|l| {
         let n = counts[l].max(1) as f64;
         let mean = sums[l] / n;
         means[l] = mean;
@@ -165,7 +170,7 @@ pub fn price_mlmc_detailed(
         } else {
             0.0
         };
-    }
+    });
 
     // ── Agrégation MLMC : Q = Σ μ_ℓ, Var(Q) = Σ V_ℓ/N_ℓ ─────────────────────
     let price: f64 = means.iter().sum();
@@ -291,18 +296,19 @@ fn level_samples(
         }
     };
 
-    let mut ys = Vec::with_capacity(fine.len());
-    for (i, fp) in fine.iter().enumerate() {
-        let pv_fine = present_value_pub(contract, fp, fp.times(), cfg.rate)?;
-        let pv_coarse = if level == 0 {
-            0.0
-        } else {
-            let cp = &coarse[i];
-            present_value_pub(contract, cp, cp.times(), cfg.rate)?
-        };
-        ys.push(pv_fine - pv_coarse);
-    }
-    Ok(ys)
+    fine.iter()
+        .enumerate()
+        .map(|(i, fp)| {
+            let pv_fine = present_value_pub(contract, fp, fp.times(), cfg.rate)?;
+            let pv_coarse = if level == 0 {
+                0.0
+            } else {
+                let cp = &coarse[i];
+                present_value_pub(contract, cp, cp.times(), cfg.rate)?
+            };
+            Ok(pv_fine - pv_coarse)
+        })
+        .collect()
 }
 
 /// Horizon temporel du contrat (date maximale), via le compilateur.
