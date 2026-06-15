@@ -77,6 +77,12 @@ pub use surface::{greek_surface, GreekSurface};
 
 pub mod products; // J9 (catalogue d'expressions DSL)
 
+pub mod backtest; // J23
+pub use backtest::{
+    backtest_delta_hedge, bs_delta, delta_hedge_error, historical_model_prices, model_vs_market,
+    stability, HedgeBacktestReport, PricingErrorReport, StabilityReport,
+};
+
 #[cfg(feature = "python")]
 mod bindings; // J8
 
