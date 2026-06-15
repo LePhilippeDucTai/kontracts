@@ -43,6 +43,7 @@
 use rayon::prelude::*;
 
 use crate::ast::Contract;
+use crate::numerics;
 use crate::observable::Path;
 use crate::pricer::PriceResult;
 use crate::simulator::Simulator;
@@ -265,54 +266,10 @@ fn poly_fit(xs: &[f64], ys: &[f64], n_basis: usize) -> Result<Vec<f64>, Kontract
         }
     }
 
-    solve_linear(ata, aty)
+    numerics::solve_linear(ata, aty)
 }
 
-/// Résout `A x = b` (A symétrique définie positive ici) par élimination de Gauss
-/// avec pivot partiel. Renvoie un vecteur nul si le système est singulier (la
-/// régression dégénère alors en continuation pure, comportement sûr).
-#[allow(clippy::needless_range_loop)] // élimination de Gauss : indices ligne/colonne
-fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, KontractError> {
-    let n = b.len();
-    for col in 0..n {
-        // Pivot partiel : ligne au plus grand |a[row][col]|.
-        let mut pivot = col;
-        let mut best = a[col][col].abs();
-        for row in (col + 1)..n {
-            let v = a[row][col].abs();
-            if v > best {
-                best = v;
-                pivot = row;
-            }
-        }
-        if best < 1e-12 {
-            // Système (quasi) singulier : régression non identifiable → coeffs nuls.
-            return Ok(vec![0.0; n]);
-        }
-        a.swap(col, pivot);
-        b.swap(col, pivot);
-
-        // Élimination.
-        for row in (col + 1)..n {
-            let factor = a[row][col] / a[col][col];
-            for c in col..n {
-                a[row][c] -= factor * a[col][c];
-            }
-            b[row] -= factor * b[col];
-        }
-    }
-
-    // Substitution arrière.
-    let mut x = vec![0.0f64; n];
-    for row in (0..n).rev() {
-        let mut sum = b[row];
-        for c in (row + 1)..n {
-            sum -= a[row][c] * x[c];
-        }
-        x[row] = sum / a[row][row];
-    }
-    Ok(x)
-}
+// solve_linear is centralized in numerics module
 
 /// Évalue le polynôme `c[0] + c[1]·x + c[2]·x² + …` par schéma de Horner.
 fn poly_eval(coeffs: &[f64], x: f64) -> f64 {

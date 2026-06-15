@@ -54,6 +54,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_distr::StandardNormal;
 use rayon::prelude::*;
 
+use crate::numerics;
 use crate::observable::Path;
 use crate::KontractError;
 
@@ -1357,7 +1358,7 @@ impl RoughBergomiSimulator {
                 cov[i][j] = cov_ij;
             }
         }
-        cholesky_lower(&cov)
+        numerics::cholesky_lower(&cov)
     }
 
     /// Échantillonne `n_paths` trajectoires du **fBm sous-jacent** `B_t^H` sur
@@ -1534,38 +1535,7 @@ pub fn rough_bergomi_from_params(
     RoughBergomiSimulator::new(asset, s0, v0, xi, h, rho, r)
 }
 
-/// Factorisation de Cholesky inférieure `L` (telle que `A = L·Lᵀ`) d'une matrice
-/// symétrique semi-définie positive `a` (stockée en lignes).
-///
-/// Implémentation dense classique en `O(n³)`. Pour rester robuste face aux
-/// covariances fBm légèrement mal conditionnées (H petit, n grand), les pivots
-/// négatifs par erreur d'arrondi sont planchés à 0 (la matrice est alors traitée
-/// comme semi-définie positive plutôt que définie positive). Aucune dépendance
-/// LAPACK n'est requise.
-fn cholesky_lower(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let n = a.len();
-    let mut l = vec![vec![0.0f64; n]; n];
-    for i in 0..n {
-        for j in 0..=i {
-            let mut sum = a[i][j];
-            // Produit scalaire des lignes i et j sur [0, j) ; l'indexation par k
-            // est nécessaire (les deux lignes de `l` sont empruntées en lecture).
-            #[allow(clippy::needless_range_loop)]
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k];
-            }
-            if i == j {
-                // Pivot diagonal : plancher à 0 pour absorber le bruit d'arrondi
-                // (covariance fBm SPD en théorie, semi-définie en pratique).
-                l[i][j] = sum.max(0.0).sqrt();
-            } else {
-                let pivot = l[j][j];
-                l[i][j] = if pivot > 0.0 { sum / pivot } else { 0.0 };
-            }
-        }
-    }
-    l
-}
+// Cholesky decomposition is centralized in numerics module
 
 // ============================================================================
 // Utilitaires communs aux simulateurs J12

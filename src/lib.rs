@@ -13,6 +13,8 @@
 mod error;
 pub use error::KontractError;
 
+pub mod numerics; // Numerical primitives (centralized)
+
 pub mod ast; // J1
 pub use ast::{Condition, Contract, Currency, Observable};
 

@@ -1,5 +1,6 @@
 //! Crank-Nicolson 1D PDE Solver (jalon J19).
 
+use crate::numerics;
 use crate::KontractError;
 use ndarray::Array1;
 
@@ -205,44 +206,9 @@ impl PdeSolver {
         c: &[f64],
         rhs: &Array1<f64>,
     ) -> Result<Array1<f64>, KontractError> {
-        let n = rhs.len();
-        let mut x = Array1::zeros(n);
-        if n <= 2 {
-            x[0] = rhs[0];
-            if n == 2 {
-                x[1] = rhs[1];
-            }
-            return Ok(x);
-        }
-
-        x[0] = rhs[0];
-        x[n - 1] = rhs[n - 1];
-
-        let mut c_mod = vec![0.0; n];
-        let mut d_mod = vec![0.0; n];
-
-        c_mod[0] = c[0] / b[0];
-        d_mod[0] = rhs[0] / b[0];
-
-        for i in 1..n {
-            let denom = b[i] - a[i] * c_mod[i - 1];
-            if denom.abs() < 1e-15 {
-                return Err(KontractError::MalformedContract(
-                    "Singular matrix".to_string(),
-                ));
-            }
-            if i < n - 1 {
-                c_mod[i] = c[i] / denom;
-            }
-            d_mod[i] = (rhs[i] - a[i] * d_mod[i - 1]) / denom;
-        }
-
-        x[n - 1] = d_mod[n - 1];
-        for i in (0..n - 1).rev() {
-            x[i] = d_mod[i] - c_mod[i] * x[i + 1];
-        }
-
-        Ok(x)
+        let rhs_vec: Vec<f64> = rhs.to_vec();
+        let x_vec = numerics::thomas(a, b, c, &rhs_vec)?;
+        Ok(Array1::from(x_vec))
     }
 }
 
@@ -373,7 +339,7 @@ mod tests {
         let solver = PdeSolver::new(cfg).unwrap();
         let grid = solver.solve_european(|s| (s - 100.0).max(0.0)).unwrap();
 
-        let spots = vec![80.0, 90.0, 100.0, 110.0, 120.0];
+        let spots = [80.0, 90.0, 100.0, 110.0, 120.0];
         let prices: Vec<_> = spots
             .iter()
             .map(|&s| solver.interpolate(&grid, s))

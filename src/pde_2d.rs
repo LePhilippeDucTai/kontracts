@@ -4,6 +4,7 @@
 //! - Heston model: PDE in (S, v) space
 //! - 2-asset correlation: PDE in (S1, S2) space
 
+use crate::numerics;
 use crate::KontractError;
 use ndarray::Array2;
 
@@ -272,45 +273,7 @@ impl Pde2dSolver {
         c: &[f64],
         rhs: &[f64],
     ) -> Result<Vec<f64>, KontractError> {
-        let n = rhs.len();
-        let mut x = vec![0.0; n];
-
-        if n <= 2 {
-            x[0] = rhs[0];
-            if n == 2 {
-                x[1] = rhs[1];
-            }
-            return Ok(x);
-        }
-
-        x[0] = rhs[0];
-        x[n - 1] = rhs[n - 1];
-
-        let mut c_mod = vec![0.0; n];
-        let mut d_mod = vec![0.0; n];
-
-        c_mod[0] = c[0] / b[0];
-        d_mod[0] = rhs[0] / b[0];
-
-        for i in 1..n {
-            let denom = b[i] - a[i] * c_mod[i - 1];
-            if denom.abs() < 1e-15 {
-                return Err(KontractError::MalformedContract(
-                    "Singular matrix in 2D ADI".to_string(),
-                ));
-            }
-            if i < n - 1 {
-                c_mod[i] = c[i] / denom;
-            }
-            d_mod[i] = (rhs[i] - a[i] * d_mod[i - 1]) / denom;
-        }
-
-        x[n - 1] = d_mod[n - 1];
-        for i in (0..n - 1).rev() {
-            x[i] = d_mod[i] - c_mod[i] * x[i + 1];
-        }
-
-        Ok(x)
+        numerics::thomas(a, b, c, rhs)
     }
 
     /// Interpolate option value at given (spot, variance) point.
@@ -501,7 +464,7 @@ mod tests {
         let solver = Pde2dSolver::new(cfg).unwrap();
         let grid = solver.solve_heston(|s, _v| (s - 100.0).max(0.0)).unwrap();
 
-        let prices: Vec<_> = vec![80.0, 90.0, 100.0, 110.0, 120.0]
+        let prices: Vec<_> = [80.0, 90.0, 100.0, 110.0, 120.0]
             .iter()
             .map(|&s| solver.interpolate(&grid, s, 0.04))
             .collect();

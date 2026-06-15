@@ -14,14 +14,13 @@
 //!
 //! Ces deux techniques sont **orthogonales** et peuvent être combinées.
 
-use std::f64::consts::SQRT_2;
-
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::StandardNormal;
 use rayon::prelude::*;
 
 use crate::ast::Contract;
+pub use crate::numerics::black_scholes_call;
 use crate::observable::Path;
 use crate::pricer::{price_on_paths, summarize_pvs, PriceResult};
 use crate::KontractError;
@@ -42,47 +41,7 @@ pub struct VarianceReductionConfig {
     pub use_control_variate: bool,
 }
 
-// ============================================================================
-// Black-Scholes analytique (variable de contrôle)
-// ============================================================================
-
-/// Approximation rationnelle de l'erreur complémentaire (Abramowitz-Stegun 7.1.26).
-/// Précision ~1e-7 ; utilisée pour calculer `N(x)` sans dépendance externe.
-fn erfc_as(x: f64) -> f64 {
-    // Approx valable pour x ≥ 0 ; on gère le signe via la parité de erfc.
-    let sign = if x < 0.0 { -1.0_f64 } else { 1.0_f64 };
-    let x_abs = x.abs();
-    let t = 1.0 / (1.0 + 0.327_591_1 * x_abs);
-    let poly = ((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736)
-        * t
-        + 0.254_829_592;
-    let erf_abs = 1.0 - poly * t * (-x_abs * x_abs).exp();
-    0.5 * (1.0 + sign * erf_abs)
-}
-
-/// CDF de la loi normale standard N(x).
-#[inline]
-fn norm_cdf(x: f64) -> f64 {
-    erfc_as(x / SQRT_2)
-}
-
-/// Prix Black-Scholes d'un call européen vanille.
-///
-/// # Paramètres
-/// - `s`     : spot initial
-/// - `k`     : strike
-/// - `t`     : maturité (années)
-/// - `r`     : taux sans risque (déterministe)
-/// - `sigma` : volatilité implicite
-pub fn black_scholes_call(s: f64, k: f64, t: f64, r: f64, sigma: f64) -> f64 {
-    if t <= 0.0 || sigma <= 0.0 {
-        return (s - k * (-r * t).exp()).max(0.0);
-    }
-    let vol_sqrt_t = sigma * t.sqrt();
-    let d1 = ((s / k).ln() + (r + 0.5 * sigma * sigma) * t) / vol_sqrt_t;
-    let d2 = d1 - vol_sqrt_t;
-    s * norm_cdf(d1) - k * (-r * t).exp() * norm_cdf(d2)
-}
+// Black-Scholes analytique is now in numerics module (imported above).
 
 // ============================================================================
 // Variables antithétiques
