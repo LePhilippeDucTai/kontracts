@@ -76,6 +76,7 @@ pub use pde_2d::{Pde2dConfig, Pde2dSolver};
 pub use surface::{greek_surface, GreekSurface};
 
 pub mod products; // J9 (catalogue d'expressions DSL)
+pub mod structured_products; // J28
 
 pub mod fx; // J25
 pub use fx::{
