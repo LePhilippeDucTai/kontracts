@@ -31,8 +31,10 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::ast::{Condition, Contract, Observable};
+use crate::fx::GbmFactor;
 use crate::greeks::{greeks_gbm, BumpSizes};
 use crate::lsm::{price_american_lsm, LsmConfig};
+use crate::multi_asset::CorrelatedGbmN;
 use crate::pricer::{price_gbm, McConfig};
 use crate::rates::{
     price_under_short_rate, swaption_price_mc, HullWhite, ShortRateModel, Swaption, Vasicek,
@@ -79,6 +81,37 @@ impl PyObservable {
     fn min(&self, other: &PyObservable) -> PyObservable {
         PyObservable {
             inner: self.inner.clone().min(other.inner.clone()),
+        }
+    }
+
+    // --- Observables temporels (J26) : pipeline ergonomique ---------------------
+    // `S("X").average()`, `S("X").running_max()`, … pour Asian / lookback.
+
+    /// Moyenne arithmétique sur toute la grille jusqu'au pas courant (J26).
+    fn average(&self) -> PyObservable {
+        PyObservable {
+            inner: crate::ast::average(self.inner.clone()),
+        }
+    }
+
+    /// Moyenne arithmétique sur la fenêtre `[from_year, to_year]` (J26).
+    fn average_over(&self, from_year: f64, to_year: f64) -> PyObservable {
+        PyObservable {
+            inner: crate::ast::average_over(self.inner.clone(), from_year, to_year),
+        }
+    }
+
+    /// Maximum courant depuis t = 0 (lookback à frappe fixe, J26).
+    fn running_max(&self) -> PyObservable {
+        PyObservable {
+            inner: crate::ast::running_max(self.inner.clone()),
+        }
+    }
+
+    /// Minimum courant depuis t = 0 (J26).
+    fn running_min(&self) -> PyObservable {
+        PyObservable {
+            inner: crate::ast::running_min(self.inner.clone()),
         }
     }
 
@@ -716,6 +749,93 @@ fn at(t: f64) -> PyCondition {
 }
 
 // =============================================================================
+// Observables temporels (J26) — Asian / lookback
+// =============================================================================
+
+/// Moyenne arithmétique de l'observable sur toute la grille jusqu'au pas courant.
+///
+/// Un Asian call : `(average(S("X")) - K).clip(0.0) * one(USD) @ at(T)`.
+#[pyfunction]
+fn average(obs: &PyObservable) -> PyObservable {
+    PyObservable {
+        inner: crate::ast::average(obs.inner.clone()),
+    }
+}
+
+/// Moyenne arithmétique sur la fenêtre temporelle `[from_year, to_year]`.
+#[pyfunction]
+fn average_over(obs: &PyObservable, from_year: f64, to_year: f64) -> PyObservable {
+    PyObservable {
+        inner: crate::ast::average_over(obs.inner.clone(), from_year, to_year),
+    }
+}
+
+/// Maximum courant de l'observable (lookback à frappe fixe).
+///
+/// Un lookback call : `(running_max(S("X")) - K).clip(0.0) * one(USD) @ at(T)`.
+#[pyfunction]
+fn running_max(obs: &PyObservable) -> PyObservable {
+    PyObservable {
+        inner: crate::ast::running_max(obs.inner.clone()),
+    }
+}
+
+/// Minimum courant de l'observable depuis t = 0.
+#[pyfunction]
+fn running_min(obs: &PyObservable) -> PyObservable {
+    PyObservable {
+        inner: crate::ast::running_min(obs.inner.clone()),
+    }
+}
+
+// =============================================================================
+// Simulateur multi-actifs corrélé (J27) — basket / spread
+// =============================================================================
+
+/// Facteur GBM d'un sous-jacent du basket : `(name, s0, mu, sigma)`.
+///
+/// `mu` est le drift sous la mesure choisie (= `r` en risque-neutre sans dividende).
+#[pyclass(name = "GbmFactor")]
+#[derive(Clone)]
+pub struct PyGbmFactor {
+    inner: GbmFactor,
+}
+
+#[pymethods]
+impl PyGbmFactor {
+    /// `GbmFactor(name, s0, mu, sigma)`.
+    #[new]
+    fn new(name: String, s0: f64, mu: f64, sigma: f64) -> Self {
+        PyGbmFactor {
+            inner: GbmFactor::new(name, s0, mu, sigma),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GbmFactor(name={:?}, s0={}, mu={}, sigma={})",
+            self.inner.name, self.inner.s0, self.inner.mu, self.inner.sigma
+        )
+    }
+}
+
+/// N GBM corrélés (Cholesky N×N) → `Model` priçable par le moteur existant.
+///
+/// Les payoffs basket / spread s'écrivent en DSL pur, p.ex.
+/// `((S("S1") + S("S2")) / 2.0 - K).clip(0.0) * one(USD) @ at(T)`.
+#[pyfunction]
+#[pyo3(signature = (factors, corr, r))]
+fn correlated_gbm(factors: Vec<PyGbmFactor>, corr: Vec<Vec<f64>>, r: f64) -> PyResult<PyModel> {
+    let assets = factors.into_iter().map(|f| f.inner).collect();
+    let model = CorrelatedGbmN::new(assets, corr).map_err(to_py_err)?;
+    Ok(PyModel {
+        inner: Box::new(model),
+        rate: r,
+        label: "CorrelatedGbmN".into(),
+    })
+}
+
+// =============================================================================
 // Taux courts stochastiques (J24)
 // =============================================================================
 
@@ -933,6 +1053,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySwaption>()?;
     m.add_class::<PyPriceResult>()?;
     m.add_class::<PyGreeks>()?;
+    m.add_class::<PyGbmFactor>()?;
 
     // DSL de base
     m.add_function(wrap_pyfunction!(zero, m)?)?;
@@ -942,6 +1063,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spot, m)?)?;
     m.add_function(wrap_pyfunction!(const_, m)?)?;
     m.add_function(wrap_pyfunction!(at, m)?)?;
+
+    // Observables temporels (J26) + basket corrélé (J27)
+    m.add_function(wrap_pyfunction!(average, m)?)?;
+    m.add_function(wrap_pyfunction!(average_over, m)?)?;
+    m.add_function(wrap_pyfunction!(running_max, m)?)?;
+    m.add_function(wrap_pyfunction!(running_min, m)?)?;
+    m.add_function(wrap_pyfunction!(correlated_gbm, m)?)?;
 
     // Modèles (J12–J16)
     m.add_function(wrap_pyfunction!(heston, m)?)?;
