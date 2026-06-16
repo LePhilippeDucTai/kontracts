@@ -6,6 +6,32 @@ use kontract::{
 };
 
 #[test]
+fn test_fit_gbm_volatility_off_grid_target() {
+    // Régression : cible σ=0.223, NON alignée sur la grille σ₀±0.05 du départ.
+    // L'ancien pas à magnitude fixe ±0.05 oscillait 0.20↔0.25 sans jamais
+    // atteindre une cible intermédiaire ; le pas de Gauss-Newton converge.
+    let true_vol = 0.223;
+    let (spot, strike, maturity, rate) = (100.0, 100.0, 1.0, 0.05);
+    let market = kontract::numerics::black_scholes_call(spot, strike, maturity, rate, true_vol);
+
+    let config = FastCalibrationConfig {
+        n_paths: 8000,
+        ..Default::default()
+    };
+    let contract = european_call("EQ", strike, maturity, "USD"); // asset ≠ "underlying"
+    let result = fit_gbm_volatility(&contract, &[maturity], &[(spot, market)], rate, &config)
+        .expect("Calibration failed");
+
+    assert!(
+        (result.parameters[0] - true_vol).abs() < 0.01,
+        "Fit vol {:.4} should reach off-grid target {:.4}",
+        result.parameters[0],
+        true_vol
+    );
+    assert!(result.converged, "Gauss-Newton should converge");
+}
+
+#[test]
 fn test_fit_gbm_volatility_atm() {
     // Calibrate GBM volatility from synthetic ATM call prices.
     let true_vol = 0.25;

@@ -106,6 +106,22 @@ pub trait Simulator: Send + Sync {
     /// étiqueter les trajectoires (doit matcher les `Spot(name)` du contrat).
     fn asset_name(&self) -> &str;
 
+    /// Indique si ce modèle requiert une grille temporelle fine **même** pour un
+    /// payoff path-indépendant (européen).
+    ///
+    /// Les modèles à **état latent path-dépendant** (volatilité stochastique :
+    /// Heston, SABR, Rough Bergomi ; sauts : Merton) ne peuvent évoluer leur vol
+    /// ou accumuler leurs sauts que s'ils disposent de pas intermédiaires : sur
+    /// une grille `[0, T]` à un seul pas, `ρ`/`ν` (SABR) ou `λ` (Merton) n'ont
+    /// aucun effet sur `S_T`. Le pricer densifie donc la grille à `steps_per_year`
+    /// quand cette méthode renvoie `true`.
+    ///
+    /// Défaut `false` : GBM et ses variantes (lognormal exact en un pas) n'en ont
+    /// pas besoin.
+    fn requires_fine_grid(&self) -> bool {
+        false
+    }
+
     /// Simule des trajectoires **antithétiques** (paires base + −Z) pour la
     /// réduction de variance (jalon J15).
     ///
@@ -526,6 +542,11 @@ impl HestonSimulator {
 }
 
 impl Simulator for HestonSimulator {
+    // Vol stochastique (Euler sur la variance) : grille fine indispensable.
+    fn requires_fine_grid(&self) -> bool {
+        true
+    }
+
     fn simulate(
         &self,
         times: &[f64],
@@ -761,6 +782,11 @@ impl DupireSimulator {
 }
 
 impl Simulator for DupireSimulator {
+    // Vol locale σ(S,t) intégrée par Euler : grille fine indispensable.
+    fn requires_fine_grid(&self) -> bool {
+        true
+    }
+
     fn simulate(
         &self,
         times: &[f64],
@@ -1075,6 +1101,12 @@ impl SABRSimulator {
 }
 
 impl Simulator for SABRSimulator {
+    // Vol stochastique (α évolue le long du path) : sans pas intermédiaires,
+    // ρ et ν n'ont aucun effet sur S_T. Grille fine indispensable.
+    fn requires_fine_grid(&self) -> bool {
+        true
+    }
+
     fn simulate(
         &self,
         times: &[f64],
@@ -1581,6 +1613,11 @@ fn two_h_of(h: f64) -> f64 {
 }
 
 impl Simulator for RoughBergomiSimulator {
+    // Vol rugueuse (processus fractionnaire non-markovien) : grille fine indispensable.
+    fn requires_fine_grid(&self) -> bool {
+        true
+    }
+
     fn simulate(
         &self,
         times: &[f64],

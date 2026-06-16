@@ -54,12 +54,6 @@ l'interprétation des sorties attendues.
 
 ## Notes et limites observées
 
-- **`sobol_gbm`** : l'estimateur quasi-MC actuel présente un biais de prix systématique ; le script
-  `04_mc_engine/sobol_qmc.py` ne valide que la **réduction de variance**, pas la justesse du prix.
-- **`sabr`** : dans l'implémentation actuelle, `ρ`/`ν` n'influencent pas le prix Monte-Carlo
-  (documenté dans `09_models/sabr.py`).
-- **`fit_gbm_volatility`** : l'optimiseur trust-region démarre à σ₀=0,20 et peut converger
-  prématurément ; voir la note dans `13_calibration/fit_gbm_volatility.py`.
 - **Produits à barrière continue** (bonus, twin-win, shark) et **corridor mono-fixing** : ce sont
   des approximations dont la valeur dépend de `steps_per_year` ; détaillé dans
   `14_structured_products/README.md`.

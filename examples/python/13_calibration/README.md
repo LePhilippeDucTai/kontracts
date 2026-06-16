@@ -22,6 +22,8 @@ python fit_gbm_volatility.py
   - Inversion exacte par méthode numérique (Brent/Newton) — erreur typiquement < 1e-7.
 - `k.fit_gbm_volatility(contract, maturities, market_prices, rate, n_paths)` → σ calibré
   - `market_prices` : liste de tuples `(spot, prix_observé)`.
-  - Optimisation trust-region depuis σ₀ = 0.20 ; convergence locale.
+  - Optimisation **Gauss-Newton amortie** depuis σ₀ = 0.20 (pas auto-amorti en
+    common random numbers) : atteint une cible σ quelconque en quelques itérations.
+  - L'actif simulé est déduit du contrat (pas de nom codé en dur).
   - Pour une inversion exacte sur options vanilles, préférer `implied_volatility`.
   - Utile pour les contrats path-dependent sans formule fermée.

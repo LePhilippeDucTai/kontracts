@@ -2,15 +2,16 @@
 Calibration de la volatilité GBM — k.fit_gbm_volatility.
 
 Procédure :
-  1. Générer un prix de marché Monte-Carlo à σ_vrai = 0.22.
-  2. Calibrer σ via k.fit_gbm_volatility (trust-region, départ σ_0 = 0.20).
-  3. Vérifier |σ_calibré − σ_vrai| < 0.05.
+  1. Fixer un prix de marché analytique BS à σ_vrai = 0.22.
+  2. Calibrer σ via k.fit_gbm_volatility (Gauss-Newton, départ σ_0 = 0.20).
+  3. Vérifier |σ_calibré − σ_vrai| < 0.01.
 
-Note pédagogique : l'optimiseur trust-region converge depuis σ_0 = 0.20 et
-retourne une estimation dans un rayon de 0.05 de la vraie volatilité.  Pour
-une inversion exacte, préférer k.implied_volatility (formule analytique BS).
-La fonction fit_gbm_volatility est utile pour des contrats path-dependent
-sans formule fermée, où seul un prix MC est disponible.
+Note pédagogique : l'optimiseur est un Gauss-Newton amorti (pas = −Σνᵢrᵢ/Σνᵢ²
+en common random numbers). Le pas s'auto-amortit près de l'optimum, donc il
+atteint une cible σ quelconque (et non seulement les multiples du pas) en
+quelques itérations. Pour une inversion exacte sur options vanilles, préférer
+k.implied_volatility (formule analytique BS, erreur < 1e-7) ; fit_gbm_volatility
+sert aux contrats path-dependent (asiatiques, barrières) sans formule fermée.
 """
 
 import math
@@ -81,13 +82,14 @@ print(f"\n--- 2. Résultat de la calibration ---")
 print(f"  σ estimé (fit_gbm)  : {sigma_hat:.6f}")
 print(f"  σ vrai              : {SIGMA_TRUE}")
 print(f"  |σ_est − σ_vrai|    : {err:.4f}")
-print(f"  Tolérance admissible: 0.05")
+print(f"  Tolérance admissible: 0.01")
 
-# Vérification : l'optimiseur converge depuis σ_0=0.20 vers un voisinage de σ_vrai
-assert err < 0.05, (
-    f"Calibration hors tolérance : |{sigma_hat:.4f} − {SIGMA_TRUE}| = {err:.4f} ≥ 0.05"
+# Vérification : l'optimiseur Gauss-Newton converge depuis σ_0=0.20 vers σ_vrai
+# (le pas s'auto-amortit près de l'optimum → pas d'oscillation, cible quelconque).
+assert err < 0.01, (
+    f"Calibration hors tolérance : |{sigma_hat:.4f} − {SIGMA_TRUE}| = {err:.4f} ≥ 0.01"
 )
-print(f"  [OK] Erreur < 0.05")
+print(f"  [OK] Erreur < 0.01")
 
 # ---------------------------------------------------------------------------
 # 3. Comparaison des prix reproduced à σ_estimé vs σ_vrai
@@ -109,7 +111,7 @@ print("  RÉSUMÉ")
 print("=" * 60)
 print(f"  σ vrai    : {SIGMA_TRUE}")
 print(f"  σ calibré : {sigma_hat:.6f}")
-print(f"  Erreur    : {err:.4f}  (tolérance 0.05)")
+print(f"  Erreur    : {err:.4f}  (tolérance 0.01)")
 print(f"  Prix BS cible   : {bs_price:.4f}")
 print(f"  Prix reproduced : {res_hat.price:.4f}")
 print("  Tous les asserts sont verts — script OK")

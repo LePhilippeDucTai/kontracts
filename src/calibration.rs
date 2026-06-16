@@ -53,27 +53,50 @@ pub struct CalibrationResult {
     pub converged: bool,
 }
 
-/// Calcule la MSE entre les prix Monte-Carlo GBM et les prix de marché.
-fn eval_obj_gbm(
+/// Nom du sous-jacent porté par le contrat (premier actif rencontré).
+///
+/// La calibration **doit** simuler ce sous-jacent : utiliser un nom codé en dur
+/// (ancien « underlying ») produit des trajectoires sans rapport avec les
+/// `Spot(name)` du contrat → prix constant (souvent 0) → gradient nul → l'optimiseur
+/// reste bloqué sur son point de départ.
+fn contract_asset(contract: &Contract) -> String {
+    crate::compile(contract)
+        .ok()
+        .and_then(|plan| plan.assets.into_iter().next())
+        .unwrap_or_else(|| "underlying".to_string())
+}
+
+/// Prix Monte-Carlo GBM du contrat pour chaque quote `(spot, _)`, à σ donné.
+///
+/// Renvoie un prix par quote (ordre préservé) ; `NaN` si une évaluation échoue.
+fn gbm_prices(
     contract: &Contract,
+    asset: &str,
     market_prices: &[(f64, f64)],
     sigma: f64,
     rate: f64,
     mc_config: &McConfig,
-) -> f64 {
-    let sum_sq: f64 = market_prices
+) -> Vec<f64> {
+    market_prices
         .iter()
-        .filter_map(|&(spot, market_price)| {
-            let gbm = Gbm::new("underlying", spot, rate, sigma);
+        .map(|&(spot, _)| {
+            let gbm = Gbm::new(asset, spot, rate, sigma);
             crate::pricer::price_gbm(contract, &gbm, mc_config)
-                .ok()
-                .map(|result| {
-                    let diff = result.price - market_price;
-                    diff * diff
-                })
+                .map(|r| r.price)
+                .unwrap_or(f64::NAN)
         })
-        .sum();
-    sum_sq / market_prices.len() as f64
+        .collect()
+}
+
+/// MSE entre un vecteur de prix modèle et les prix de marché.
+fn mse(prices: &[f64], market_prices: &[(f64, f64)]) -> f64 {
+    let n = market_prices.len().max(1) as f64;
+    prices
+        .iter()
+        .zip(market_prices.iter())
+        .map(|(&p, &(_, mkt))| (p - mkt).powi(2))
+        .sum::<f64>()
+        / n
 }
 
 /// Calcule la MSE entre les prix Monte-Carlo Heston et les prix de marché.
@@ -130,60 +153,78 @@ pub fn fit_gbm_volatility(
     rate: f64,
     config: &FastCalibrationConfig,
 ) -> Result<CalibrationResult, KontractError> {
-    let mut sigma = 0.20; // Initial guess
-    let mut obj_prev = f64::INFINITY;
+    let mc_config = McConfig {
+        n_paths: config.n_paths,
+        seed: 42,
+        steps_per_year: 252,
+        rate,
+        variance_reduction: None,
+    };
+    let asset = contract_asset(contract);
+    let delta = 1e-3; // pas de différence finie pour le véga
+
+    let mut sigma = 0.20_f64; // point de départ
     let mut converged = false;
+    let mut iters = config.max_iterations;
 
-    // Boucle de convergence trust-region : conservée (cf. CLAUDE.md exceptions — algorithme itératif avec early-return)
+    // **Gauss-Newton amorti** pour la moindre-carré `min_σ Σ (price_i(σ) − mkt_i)²`.
+    //
+    // À chaque pas : véga_i = ∂price_i/∂σ par différence finie en **common random
+    // numbers** (même graine/chemins pour `price` et `price(σ+δ)`), puis
+    // `Δσ = − Σ véga_i·r_i / Σ véga_i²` (r_i = price_i − mkt_i). Ce pas est
+    // **auto-amortissant** : il tend vers 0 près de l'optimum (contrairement à
+    // l'ancien pas à magnitude fixe ±0.05 qui oscillait autour de la solution).
     for iter in 0..config.max_iterations {
-        let mc_config = McConfig {
-            n_paths: config.n_paths,
-            seed: 42,
-            steps_per_year: 252,
-            rate,
-            variance_reduction: None,
-        };
-
-        let obj = eval_obj_gbm(contract, market_prices, sigma, rate, &mc_config);
-
-        // Check convergence on objective.
-        if (obj_prev - obj).abs() < config.tol_obj {
-            converged = true;
-            return Ok(CalibrationResult {
-                parameters: vec![sigma],
-                objective: obj,
-                iterations: iter + 1,
-                converged,
-            });
-        }
-        obj_prev = obj;
-
-        // Trust-region step: adjust σ based on gradient approximation.
-        let delta_sigma = 0.001;
-        let obj_up = eval_obj_gbm(
+        let prices = gbm_prices(contract, &asset, market_prices, sigma, rate, &mc_config);
+        let prices_up = gbm_prices(
             contract,
+            &asset,
             market_prices,
-            sigma + delta_sigma,
+            sigma + delta,
             rate,
             &mc_config,
         );
 
-        let grad = (obj_up - obj) / delta_sigma;
-        if grad.abs() < 1e-10 {
-            // Gradient too small, stop.
+        // Jacobien (véga) et résidus, agrégés pour le pas de Gauss-Newton.
+        let (num, den) = prices
+            .iter()
+            .zip(prices_up.iter())
+            .zip(market_prices.iter())
+            .fold(
+                (0.0_f64, 0.0_f64),
+                |(num, den), ((&p, &p_up), &(_, mkt))| {
+                    let vega = (p_up - p) / delta;
+                    let resid = p - mkt;
+                    (num + vega * resid, den + vega * vega)
+                },
+            );
+
+        // Véga négligeable (insensibilité totale) → impossible d'avancer.
+        if den < 1e-12 {
             converged = true;
+            iters = iter + 1;
             break;
         }
 
-        // Newton step with trust region.
-        let step = -(grad * config.trust_radius).clamp(-0.05, 0.05);
-        sigma = (sigma + step).clamp(0.01, 3.0); // Bound σ in [0.01, 3.0]
+        // Pas de Gauss-Newton, borné par le rayon de confiance pour la stabilité.
+        let raw_step = -num / den;
+        let step = raw_step.clamp(-config.trust_radius, config.trust_radius);
+        let sigma_next = (sigma + step).clamp(0.01, 3.0);
+
+        if (sigma_next - sigma).abs() < config.tol_param {
+            sigma = sigma_next;
+            converged = true;
+            iters = iter + 1;
+            break;
+        }
+        sigma = sigma_next;
     }
 
+    let final_prices = gbm_prices(contract, &asset, market_prices, sigma, rate, &mc_config);
     Ok(CalibrationResult {
         parameters: vec![sigma],
-        objective: obj_prev,
-        iterations: config.max_iterations,
+        objective: mse(&final_prices, market_prices),
+        iterations: iters,
         converged,
     })
 }
@@ -310,8 +351,13 @@ where
         .map(|((&x, &lo), &w)| ((x - lo) / w).clamp(0.0, 1.0))
         .collect();
 
+    // Population élargie (vs le défaut minimal λ = 4 + ⌊3·ln n⌋ ≈ 7) : la
+    // calibration multi-paramètres (SABR/Heston) avec bornes actives est sujette
+    // au piégeage en coin (un paramètre collé à sa borne fausse l'adaptation de
+    // covariance). Une population plus grande rend la recherche globale robuste.
     let cfg = CmaesConfig {
-        sigma0: 0.3,
+        population_size: Some((8 * n).max(16)),
+        sigma0: 0.4,
         max_generations,
         seed: 42,
         ..Default::default()

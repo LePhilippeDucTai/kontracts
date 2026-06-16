@@ -100,7 +100,9 @@ pub fn price_gbm(
     cfg: &McConfig,
 ) -> Result<PriceResult, KontractError> {
     let plan = compile(contract)?;
-    let grid = plan.time_grid(cfg.steps_per_year);
+    // Les modèles à vol stochastique/locale exigent une grille fine même pour un
+    // payoff européen (sinon leur volatilité n'évolue pas → ρ/ν sans effet).
+    let grid = plan.time_grid_forced(cfg.steps_per_year, model.requires_fine_grid());
 
     // ── Réduction de variance (J15) ─────────────────────────────────────────
     if let Some(vr) = &cfg.variance_reduction {
@@ -273,7 +275,7 @@ pub fn price_batch_gbm(
         horizon,
         needs_fine_grid,
     };
-    let grid = merged.time_grid(cfg.steps_per_year);
+    let grid = merged.time_grid_forced(cfg.steps_per_year, model.requires_fine_grid());
 
     // Simulation unique, partagée par tous les contrats.
     let paths = model.simulate_paths(&grid, cfg.n_paths, cfg.seed)?;

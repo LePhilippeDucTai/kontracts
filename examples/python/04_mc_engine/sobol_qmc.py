@@ -1,27 +1,29 @@
 """
-Quasi-Monte-Carlo avec séquences de Sobol (k.sobol_gbm).
+Quasi-Monte-Carlo randomisé avec k.sobol_gbm.
 
-Compare trois estimateurs du prix d'un call ATM 1 an :
+Compare deux estimateurs du prix d'un call ATM 1 an :
   1. GBM standard (Monte-Carlo pseudo-aléatoire)
-  2. Sobol GBM    (quasi-Monte-Carlo via séquences de van der Corput)
+  2. Sobol GBM    (quasi-Monte-Carlo randomisé : suite de Halton + décalage
+                   aléatoire de Cranley-Patterson piloté par la graine)
 
-Le QMC produit une erreur-standard significativement plus faible que le MC
-pseudo-aléatoire au même nombre de chemins, ce qui illustre sa convergence
-quasi-O(1/N) vs O(1/√N).
+Les deux estimateurs sont NON BIAISÉS (prix ≈ Black-Scholes), mais le rQMC
+converge nettement plus vite. La bonne mesure de ce gain n'est PAS le
+`std_error` d'un seul tirage (l'erreur QMC n'est pas une variance d'échantillon
+classique) mais la DISPERSION de l'estimateur sur plusieurs décalages
+aléatoires : on lance N runs avec des graines différentes et on compare l'écart
+-type des prix obtenus. Le rQMC se resserre beaucoup plus que le MC pseudo.
 
-REMARQUE DE MISE EN OEUVRE : l'implémentation actuelle de k.sobol_gbm
-combine deux séquences de van der Corput via une moyenne, ce qui introduit
-un biais systématique dans le prix (la distribution résultante n'est pas
-exactement log-normale). Les assertions portent donc sur la VARIANCE
-(std_error réduit) et non sur la précision absolue du prix.
+Construction : chaque pas de temps j utilise une base de Halton première
+distincte (2, 3, 5, …) ; un décalage aléatoire par dimension (graine) randomise
+la suite tout en préservant la distribution U[0,1) exacte → estimateur sans biais.
 """
 
 import math
+import statistics
 import kontract as k
 
 # ── Paramètres ─────────────────────────────────────────────────────────────
 S0, K, r, sigma, T = 100.0, 100.0, 0.05, 0.20, 1.0
-N_PATHS = 65_536   # puissance de 2, optimal pour Sobol
 SEED = 42
 
 
@@ -42,50 +44,72 @@ print(f"Paramètres : S={S0}, K={K}, r={r}, σ={sigma}, T={T}\n")
 
 # ── Modèles ────────────────────────────────────────────────────────────────
 call = k.european_call("X", K, T, k.USD)
-m_gbm   = k.GBM(s0=S0, sigma=sigma, r=r, asset="X")
+m_gbm = k.GBM(s0=S0, sigma=sigma, r=r, asset="X")
 m_sobol = k.sobol_gbm(spot=S0, sigma=sigma, r=r, asset="X")
 
-res_gbm   = call.price(m_gbm,   n_paths=N_PATHS, seed=SEED)
-res_sobol = call.price(m_sobol, n_paths=N_PATHS, seed=SEED)
-
-# ── Affichage comparatif ───────────────────────────────────────────────────
-print(f"{'Modèle':<12}  {'Prix MC':>9}  {'Std-error':>10}  "
-      f"{'|Prix-BS|/BS':>13}  {'Ratio σ(GBM/QMC)':>17}")
-print("-" * 70)
-
-err_gbm   = abs(res_gbm.price   - prix_bs) / prix_bs
+# ── 1. Justesse : les deux estimateurs reproduisent BS ─────────────────────
+N_REF = 65_536
+res_gbm = call.price(m_gbm, n_paths=N_REF, seed=SEED)
+res_sobol = call.price(m_sobol, n_paths=N_REF, seed=SEED)
+err_gbm = abs(res_gbm.price - prix_bs) / prix_bs
 err_sobol = abs(res_sobol.price - prix_bs) / prix_bs
-ratio_sigma = res_gbm.std_error / res_sobol.std_error
 
-print(f"{'GBM (MC)':<12}  {res_gbm.price:>9.4f}  "
-      f"{res_gbm.std_error:>10.5f}  {err_gbm:>13.4%}  {'—':>17}")
-print(f"{'Sobol QMC':<12}  {res_sobol.price:>9.4f}  "
-      f"{res_sobol.std_error:>10.5f}  {err_sobol:>13.4%}  {ratio_sigma:>17.2f}×")
+print("1. Justesse (n_paths = 65 536, une graine)")
+print(f"{'Modèle':<12}  {'Prix':>9}  {'|Prix-BS|/BS':>13}")
+print("-" * 40)
+print(f"{'GBM (MC)':<12}  {res_gbm.price:>9.4f}  {err_gbm:>13.4%}")
+print(f"{'Sobol QMC':<12}  {res_sobol.price:>9.4f}  {err_sobol:>13.4%}")
 
-# ── Convergence Sobol : O(log(N)/N) en théorie ────────────────────────────
-print("\nConvergence QMC Sobol (std_error en fonction de n) :")
-print(f"{'n_paths':>8}  {'std_error GBM':>14}  {'std_error Sobol':>16}  {'Ratio':>7}")
-print("-" * 50)
+# ── 2. Gain rQMC : dispersion de l'estimateur sur plusieurs décalages ──────
+# On répète le pricing avec plusieurs graines (décalages aléatoires indépendants)
+# et on mesure l'écart-type des prix : c'est l'erreur effective de l'estimateur.
+N_PATHS = 8_192
+SEEDS = list(range(1, 21))  # 20 décalages indépendants
 
-for n in [1_024, 4_096, 16_384, 65_536]:
-    rg = call.price(m_gbm,   n_paths=n, seed=SEED)
-    rs = call.price(m_sobol, n_paths=n, seed=SEED)
-    r_ratio = rg.std_error / rs.std_error if rs.std_error > 0 else float("inf")
-    print(f"{n:>8}  {rg.std_error:>14.5f}  {rs.std_error:>16.5f}  {r_ratio:>7.2f}×")
+prices_sobol = [
+    call.price(m_sobol, n_paths=N_PATHS, seed=s, steps_per_year=5).price for s in SEEDS
+]
+prices_gbm = [
+    call.price(m_gbm, n_paths=N_PATHS, seed=s, steps_per_year=5).price for s in SEEDS
+]
 
-# ── Vérification : Sobol produit une erreur-standard plus faible ───────────
-# (La faible variance est la propriété clé du QMC, même si le prix a un biais
-#  systématique dû à la combinaison des séquences VdC dans cette implémentation.)
-assert res_sobol.std_error < res_gbm.std_error, (
-    f"Sobol doit avoir un std_error plus faible que GBM "
-    f"({res_sobol.std_error:.5f} >= {res_gbm.std_error:.5f})"
+std_sobol = statistics.pstdev(prices_sobol)
+std_gbm = statistics.pstdev(prices_gbm)
+mean_sobol = statistics.mean(prices_sobol)
+mean_gbm = statistics.mean(prices_gbm)
+ratio = std_gbm / std_sobol if std_sobol > 0 else float("inf")
+
+print(f"\n2. Dispersion de l'estimateur sur {len(SEEDS)} décalages "
+      f"(n_paths = {N_PATHS})")
+print(f"{'Modèle':<12}  {'Moyenne':>9}  {'Écart-type':>11}")
+print("-" * 38)
+print(f"{'GBM (MC)':<12}  {mean_gbm:>9.4f}  {std_gbm:>11.5f}")
+print(f"{'Sobol rQMC':<12}  {mean_sobol:>9.4f}  {std_sobol:>11.5f}")
+print(f"\n→ Réduction d'erreur effective (écart-type) : {ratio:.1f}×")
+
+# ── 3. Convergence : l'erreur rQMC décroît plus vite en n ──────────────────
+print("\n3. Convergence (écart-type sur 12 décalages selon n_paths)")
+print(f"{'n_paths':>8}  {'std GBM':>10}  {'std Sobol':>11}  {'Ratio':>7}")
+print("-" * 42)
+for n in [1_024, 2_048, 4_096, 8_192]:
+    seeds = list(range(1, 13))
+    ps = [call.price(m_sobol, n_paths=n, seed=s, steps_per_year=5).price for s in seeds]
+    pg = [call.price(m_gbm, n_paths=n, seed=s, steps_per_year=5).price for s in seeds]
+    ss, sg = statistics.pstdev(ps), statistics.pstdev(pg)
+    rr = sg / ss if ss > 0 else float("inf")
+    print(f"{n:>8}  {sg:>10.5f}  {ss:>11.5f}  {rr:>6.1f}×")
+
+# ── Vérifications ──────────────────────────────────────────────────────────
+# 1. Les deux estimateurs sont non biaisés (< 1 % de BS).
+assert err_gbm < 0.01, f"GBM : erreur relative trop grande ({err_gbm:.4%})"
+assert err_sobol < 0.01, (
+    f"Sobol : erreur relative trop grande ({err_sobol:.4%}) — biais détecté"
+)
+# 2. Les deux moyennes (sur décalages) restent centrées sur BS.
+assert abs(mean_sobol - prix_bs) / prix_bs < 0.01, "Sobol rQMC doit être centré sur BS"
+# 3. Le rQMC réduit nettement la dispersion de l'estimateur (gain ≥ 3×).
+assert ratio > 3.0, (
+    f"Sobol rQMC doit réduire l'écart-type d'au moins 3× (obtenu {ratio:.1f}×)"
 )
 
-# GBM doit rester précis vs BS (erreur relative < 5 %)
-assert err_gbm < 0.05, (
-    f"GBM : erreur relative trop grande ({err_gbm:.4%})"
-)
-
-print(f"\nRatio std_error(GBM) / std_error(Sobol) : {ratio_sigma:.2f}×")
-print("→ Le QMC Sobol réduit la variance d'un facteur ~6 au même nombre de chemins.")
-print("\n✓ Assertions passées : variance Sobol < variance GBM, prix GBM précis.")
+print("\n✓ Assertions passées : prix Sobol non biaisé ET dispersion fortement réduite.")

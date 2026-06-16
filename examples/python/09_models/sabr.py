@@ -1,22 +1,21 @@
 """
-Modèle SABR — backbone CEV et skew de volatilité
-=================================================
-Illustre comment le paramètre alpha (vol initiale) pilote le niveau de prix,
-et comment le backbone beta de SABR modifie la structure par rapport à GBM.
+Modèle SABR — backbone CEV, skew (ρ) et smile (ν)
+==================================================
+Illustre les quatre paramètres du modèle SABR (Hagan et al. 2002) :
 
-SABR (Hagan et al. 2002) :
-    dF = α F^β dW_F
-    dα = ν α dW_α       corr(dW_F, dW_α) = ρ
+    dS = α S^β dW_S
+    dα = ν α dW_α       corr(dW_S, dW_α) = ρ
 
-Note d'implémentation : dans cette version du moteur, SABR est simulé via
-l'approximation analytique Hagan pour σ_SABR(K) puis intégré via Monte-Carlo
-GBM. Le paramètre prédominant est alpha (vol ATM effective = α · F^(β-1)).
+Implémentation : schéma d'Euler en log-espace pour S et log-normal exact
+pour α, avec browniens corrélés via décomposition de Cholesky.
 
 Démonstrations :
-  1. alpha contrôle le prix — deux alpha (0.18 vs 0.22) simulant deux marchés
-     avec skew implicite différent.
-  2. beta < 1 (CEV) vs beta = 1 (log-normal) pour comparer la richesse des OTM.
-  3. Pour deux scénarios de vol, comparer call OTM / put OTM vs BS(α).
+  1. alpha contrôle le niveau de vol — deux alpha (0.18 vs 0.22) simulant
+     deux marchés avec vol implicite différente.
+  2. beta < 1 (CEV) vs beta = 1 (log-normal) pour comparer la richesse OTM.
+  3. rho et nu : impact sur le skew et le smile de volatilité implicite.
+     - ρ < 0 (actions) → puts OTM plus chers que calls OTM (skew négatif).
+     - ν > 0 → smile (options OTM plus chères qu'avec vol plate).
 """
 
 import math
@@ -131,6 +130,52 @@ print("  - En pratique, les traders actions calibrent beta ~ 0.5–0.8 pour")
 print("    reproduire le skew observé sur le marché des options.")
 
 # ---------------------------------------------------------------------------
+# Partie 3 — Rôle de rho et nu : skew et smile de vol implicite
+# ---------------------------------------------------------------------------
+# Strikes symétriques autour de l'ATM (S0=100) : K=110 (call OTM) et K=90 (put OTM)
+call_110 = (S - k.const_(110.0)).clip(0.0) * k.one(k.USD) @ k.at(T)
+put_90   = (k.const_(90.0) - S).clip(0.0)  * k.one(k.USD) @ k.at(T)
+
+PATHS3 = 120_000  # plus de chemins pour détecter des effets de skew modérés
+
+# ρ = -0.7 : corrélation négative spot-vol (scénario actions typique)
+m_neg = k.sabr(spot=S0, alpha=0.20, beta=1.0, nu=0.40, rho=-0.70, r=r, asset="X")
+p_call_neg = call_110.price(m_neg, n_paths=PATHS3, seed=SEED, steps_per_year=STEPS).price
+p_put_neg  = put_90.price(  m_neg, n_paths=PATHS3, seed=SEED, steps_per_year=STEPS).price
+
+# ρ = +0.7 : corrélation positive (matières premières, etc.)
+m_pos = k.sabr(spot=S0, alpha=0.20, beta=1.0, nu=0.40, rho=+0.70, r=r, asset="X")
+p_call_pos = call_110.price(m_pos, n_paths=PATHS3, seed=SEED, steps_per_year=STEPS).price
+p_put_pos  = put_90.price(  m_pos, n_paths=PATHS3, seed=SEED, steps_per_year=STEPS).price
+
+# nu = 0 vs nu = 0.4 (avec ρ=0 pour isoler l'effet smile)
+m_nu0 = k.sabr(spot=S0, alpha=0.20, beta=1.0, nu=0.00, rho=0.0, r=r, asset="X")
+m_nu4 = k.sabr(spot=S0, alpha=0.20, beta=1.0, nu=0.40, rho=0.0, r=r, asset="X")
+p_call_nu0 = call_110.price(m_nu0, n_paths=PATHS3, seed=SEED, steps_per_year=STEPS).price
+p_call_nu4 = call_110.price(m_nu4, n_paths=PATHS3, seed=SEED, steps_per_year=STEPS).price
+
+print()
+print("Partie 3 — Impact de rho (skew) et nu (smile)")
+print(f"  Même option comparée à différents rho/nu (S0={S0}, forward≈105.1)")
+print(f"  Le skew se lit en comparant UNE option entre deux rho (pas put vs call,")
+print(f"  car K=110 et K=90 ne sont pas symétriques autour du forward).")
+print()
+print(f"{'Option':<18} {'rho=-0.7':>10} {'rho=+0.7':>10}  Effet du skew")
+print("-" * 70)
+print(f"  Call OTM K=110   {p_call_neg:>10.4f} {p_call_pos:>10.4f}  aile droite ↑ si rho>0")
+print(f"  Put  OTM K=90    {p_put_neg:>10.4f} {p_put_pos:>10.4f}  aile gauche ↑ si rho<0")
+print()
+print(f"{'Option':<18} {'nu=0':>10} {'nu=0.4':>10}  Effet du smile")
+print("-" * 70)
+print(f"  Call OTM K=110   {p_call_nu0:>10.4f} {p_call_nu4:>10.4f}  OTM ↑ avec nu>0")
+print()
+print("Commentaire :")
+print("  - rho < 0 : hausse spot → baisse vol → aile GAUCHE renchérie (put 90 plus cher).")
+print("  - rho > 0 : hausse spot → hausse vol → aile DROITE renchérie (call 110 plus cher).")
+print("  - nu > 0  : vol elle-même aléatoire → queues plus épaisses → options OTM")
+print("    plus chères qu'avec une vol plate (ν=0 ≡ GBM).")
+
+# ---------------------------------------------------------------------------
 # Assertions
 # ---------------------------------------------------------------------------
 # Prix augmentent avec alpha
@@ -151,5 +196,20 @@ assert lever_po > lever_atm, (
     f"(po={lever_po:.3f}, atm={lever_atm:.3f})"
 )
 
+# Skew rho : l'aile DROITE (call 110) se renchérit quand rho passe de −0.7 à +0.7.
+assert p_call_pos > p_call_neg, (
+    f"call OTM K=110 devrait croître avec rho "
+    f"(rho=-0.7 → {p_call_neg:.4f}, rho=+0.7 → {p_call_pos:.4f})"
+)
+# Skew rho : l'aile GAUCHE (put 90) se renchérit quand rho passe de +0.7 à −0.7.
+assert p_put_neg > p_put_pos, (
+    f"put OTM K=90 devrait décroître avec rho "
+    f"(rho=-0.7 → {p_put_neg:.4f}, rho=+0.7 → {p_put_pos:.4f})"
+)
+# Smile nu : ν > 0 renchérit les options OTM vs vol plate (ν=0).
+assert p_call_nu4 > p_call_nu0, (
+    f"nu=0.4 : call OTM ({p_call_nu4:.4f}) devrait dépasser nu=0 ({p_call_nu0:.4f})"
+)
+
 print()
-print("Assertions OK — sensibilité à alpha et levier OTM conformes.")
+print("Assertions OK — sensibilité à alpha, levier OTM, skew rho, smile nu conformes.")
