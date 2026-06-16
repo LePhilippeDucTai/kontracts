@@ -50,6 +50,24 @@ pub enum Observable {
     Max(Box<Observable>, Box<Observable>),
     /// Minimum point à point.
     Min(Box<Observable>, Box<Observable>),
+    /// Moyenne arithmétique de l'observable sur `[from_year, to_year]`.
+    ///
+    /// - `from_year = None` → depuis t = 0 (début de la grille).
+    /// - `to_year = None` → jusqu'au pas courant d'évaluation.
+    ///
+    /// Exemple : `Average { obs: spot("X"), from_year: None, to_year: None }`
+    /// évalué au pas T donne la moyenne de S_0, …, S_T.
+    Average {
+        obs: Box<Observable>,
+        from_year: Option<f64>,
+        to_year: Option<f64>,
+    },
+    /// Maximum courant de l'observable depuis t = 0 jusqu'au pas courant.
+    ///
+    /// Payoff lookback à frappe fixe : `RunningMax(spot("X")) - K`.
+    RunningMax(Box<Observable>),
+    /// Minimum courant de l'observable depuis t = 0 jusqu'au pas courant.
+    RunningMin(Box<Observable>),
 }
 
 impl Observable {
@@ -286,10 +304,48 @@ pub fn s(name: impl Into<String>) -> Observable {
     spot(name)
 }
 
+/// Moyenne arithmétique de l'observable sur toute la grille jusqu'au pas courant.
+///
+/// Exemple : `average(spot("AAPL"))` évalué à T donne la moyenne de S_0…S_T.
+pub fn average(obs: Observable) -> Observable {
+    Observable::Average {
+        obs: Box::new(obs),
+        from_year: None,
+        to_year: None,
+    }
+}
+
+/// Moyenne arithmétique sur la fenêtre temporelle `[from_year, to_year]`.
+pub fn average_over(obs: Observable, from_year: f64, to_year: f64) -> Observable {
+    Observable::Average {
+        obs: Box::new(obs),
+        from_year: Some(from_year),
+        to_year: Some(to_year),
+    }
+}
+
+/// Maximum courant de l'observable depuis t = 0 jusqu'au pas courant.
+pub fn running_max(obs: Observable) -> Observable {
+    Observable::RunningMax(Box::new(obs))
+}
+
+/// Minimum courant de l'observable depuis t = 0 jusqu'au pas courant.
+pub fn running_min(obs: Observable) -> Observable {
+    Observable::RunningMin(Box::new(obs))
+}
+
 impl Observable {
     /// Plancher : `max(self, floor)` — équivaut au `.clip(floor)` du README.
     pub fn clip(self, floor: f64) -> Observable {
         self.max(Observable::Const(floor))
+    }
+
+    /// Mise à l'échelle du contrat par `self` — pont Observable → Contract.
+    ///
+    /// Équivalent à `scale(self, contract)` ou `self * contract`, en style pipeline :
+    /// `spot("X").sub(100.0).clip(0.0).scale(one(USD)).when(at(1.0))`
+    pub fn scale(self, contract: Contract) -> Contract {
+        Contract::Scale(self, Box::new(contract))
     }
 }
 

@@ -120,6 +120,14 @@ fn walk_observable(o: &Observable, acc: &mut Accumulator) {
             walk_observable(a, acc);
             walk_observable(b, acc);
         }
+        Observable::Average { obs, .. } => {
+            acc.needs_fine_grid = true;
+            walk_observable(obs, acc);
+        }
+        Observable::RunningMax(obs) | Observable::RunningMin(obs) => {
+            acc.needs_fine_grid = true;
+            walk_observable(obs, acc);
+        }
     }
 }
 

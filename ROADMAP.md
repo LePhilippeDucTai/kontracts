@@ -81,6 +81,15 @@ n'est pas marqué `DONE` dans `PROGRESS.md`.
 | J21 | Lecteur données | yfinance/CSV options ; surface vol implicite (Brent) ; smoothing | Sonnet | S&P 500 surface (skew, term) plausible |
 | J22 | Optimiseur calib | Lev-Mar ou CMA-ES ; Heston/Dupire/SABR/Merton ; contraintes param | **Opus** | Round-trip < 1% params, < 0.5% prix |
 
+## Phase 5 : Extensions DSL (post-MVP)
+
+| # | Titre | Contenu | Modèle | Critère |
+|---|-------|---------|--------|---------|
+| J26 | Observables temporels | `Average{obs, from_year, to_year}`, `RunningMax(obs)`, `RunningMin(obs)` dans l'AST + éval sur path ; Asian call + lookback call via le moteur existant sans aucun cas spécial | **Opus** | Asian < vanilla (Jensen), lookback > vanilla (dominance), AM-GM sur path, round-trip JSON, compilateur active grille fine (7 tests) |
+| J27 | Basket n-actifs | `WeightedBasket([w_i], [obs_i])` observable ; `CorrelatedGbmN` simulateur n×n corrélé (Cholesky) ; spread option vs Margrabe | **Opus** | basket 3 actifs vs BS(vol combinée) <2 %, spread vs Margrabe <2 % |
+| J28 | Produits structurés | Module `structured_products` : autocallable (`until`+`anytime`), reverse convertible, capital-protected note ; bornes économiques validées | Sonnet | 3 produits, PV > 0, bornes payoff respectées |
+| J29 | Bindings Python J26/J27 | Expose `average`, `running_max`, `running_min`, `weighted_basket`, `CorrelatedGbmN` à Python + stubs `.pyi` | Sonnet | tests pytest Asian/lookback/basket |
+
 ## Invariants à ne jamais violer
 
 1. L'AST reste **sérialisable et pur** : aucune logique de pricing dedans.
