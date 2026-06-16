@@ -40,11 +40,23 @@ impl Plan {
     /// - Si une barrière est présente : une subdivision dense de `[0, horizon]`
     ///   à la résolution `steps_per_year`.
     pub fn time_grid(&self, steps_per_year: usize) -> Vec<f64> {
+        self.time_grid_forced(steps_per_year, false)
+    }
+
+    /// Variante de [`Plan::time_grid`] permettant de **forcer** la grille fine même
+    /// quand le contrat ne l'exige pas (`needs_fine_grid == false`).
+    ///
+    /// Le pricer l'active pour les modèles à état latent path-dépendant
+    /// (vol stochastique : Heston/SABR/Rough Bergomi ; vol locale : Dupire), qui
+    /// ont besoin de pas intermédiaires pour faire évoluer leur volatilité — sinon
+    /// un payoff européen sur `[0, T]` ne « verrait » jamais la dynamique de vol
+    /// (cf. [`Simulator::requires_fine_grid`]).
+    pub fn time_grid_forced(&self, steps_per_year: usize, force_fine: bool) -> Vec<f64> {
         let mut pts = vec![0.0];
         pts.extend_from_slice(&self.fixed_dates);
         pts.push(self.horizon);
 
-        if self.needs_fine_grid && self.horizon > 0.0 && steps_per_year > 0 {
+        if (self.needs_fine_grid || force_fine) && self.horizon > 0.0 && steps_per_year > 0 {
             let n = (self.horizon * steps_per_year as f64).ceil() as usize;
             pts.extend((1..=n).map(|k| self.horizon * (k as f64) / (n as f64)));
         }

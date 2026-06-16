@@ -88,6 +88,63 @@ fn sobol_convergence_trend() {
 }
 
 #[test]
+fn sobol_matches_black_scholes() {
+    // Régression : le prix Sobol doit coller à Black-Scholes analytique.
+    // (Garde-fou contre le biais d'inversion normale d'Acklam corrigé : l'ancienne
+    //  version sous-dispersait les tirages → prix ~60–70 % sous BS.)
+    let call = products::european_call("X", 100.0, 1.0, "USD");
+    let sobol_gbm = SobolGbm::new("X", 100.0, 0.05, 0.2);
+
+    let cfg = McConfig {
+        n_paths: 32_768,
+        seed: 42,
+        steps_per_year: 50,
+        rate: 0.05,
+        variance_reduction: None,
+    };
+
+    let result = price_gbm(&call, &sobol_gbm, &cfg).expect("pricing failed");
+    let bs = numerics::black_scholes_call(100.0, 100.0, 1.0, 0.05, 0.2);
+
+    let rel_err = (result.price - bs).abs() / bs;
+    assert!(
+        rel_err < 0.02,
+        "Sobol call {:.4} doit coller à BS {:.4} (err rel {:.4} ≥ 0.02)",
+        result.price,
+        bs,
+        rel_err
+    );
+}
+
+#[test]
+fn sobol_forward_is_martingale() {
+    // Le forward prépayé actualisé doit valoir S0 (propriété de martingale).
+    // Test direct de la justesse de la distribution simulée (E[S_T·e^{-rT}] = S0).
+    use kontract::ast::{at, one, scale, spot, when};
+    let s0 = 100.0;
+    let fwd = when(at(1.0), scale(spot("X"), one("USD")));
+    let sobol_gbm = SobolGbm::new("X", s0, 0.05, 0.2);
+
+    let cfg = McConfig {
+        n_paths: 32_768,
+        seed: 42,
+        steps_per_year: 1,
+        rate: 0.05,
+        variance_reduction: None,
+    };
+
+    let result = price_gbm(&fwd, &sobol_gbm, &cfg).expect("pricing failed");
+    let rel_err = (result.price - s0).abs() / s0;
+    assert!(
+        rel_err < 0.01,
+        "Forward Sobol {:.4} doit valoir S0={} (err rel {:.4} ≥ 0.01)",
+        result.price,
+        s0,
+        rel_err
+    );
+}
+
+#[test]
 fn sobol_barrier_knockout() {
     // Test 4: Sobol on a knock-out barrier call
     let ko_call = products::up_and_out_call("IBM", 110.0, 120.0, 1.0, "USD");
