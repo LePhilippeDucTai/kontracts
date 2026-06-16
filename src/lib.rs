@@ -83,6 +83,9 @@ pub use fx::{
     quanto_put, CorrelatedGbm2, GbmFactor,
 };
 
+pub mod multi_asset; // J27
+pub use multi_asset::CorrelatedGbmN;
+
 pub mod rates; // J24
 pub use rates::{
     cumulative_discounts, discount_factor, price_under_short_rate, swaption_price_mc, HullWhite,
