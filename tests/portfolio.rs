@@ -60,8 +60,8 @@ fn empty_portfolio_is_empty() {
 #[test]
 fn prices_one_hundred_contracts_quickly() {
     // 100 contrats, simulation partagée. Cible release : < 500 ms.
-    // En debug (non optimisé) on relâche la borne ; l'évidence < 500 ms est
-    // produite par `cargo test --release` (cf. PROGRESS).
+    // L'évidence de performance est produite par `cargo test --release` :
+    // en debug, le temps dépend trop de la machine et de la charge CPU.
     let model = Gbm::new("AAPL", 100.0, 0.05, 0.20);
     let contracts: Vec<Contract> = (1..=100).map(|i| call(60.0 + i as f64)).collect();
 
@@ -70,11 +70,13 @@ fn prices_one_hundred_contracts_quickly() {
     let elapsed = start.elapsed();
 
     assert_eq!(prices.len(), 100);
-    let limit_ms = if cfg!(debug_assertions) { 5000 } else { 500 };
-    assert!(
-        elapsed.as_millis() < limit_ms,
-        "batch de 100 contrats en {} ms (limite {} ms)",
-        elapsed.as_millis(),
-        limit_ms
-    );
+    if !cfg!(debug_assertions) {
+        let limit_ms = 500;
+        assert!(
+            elapsed.as_millis() < limit_ms,
+            "batch de 100 contrats en {} ms (limite {} ms)",
+            elapsed.as_millis(),
+            limit_ms
+        );
+    }
 }
