@@ -22,30 +22,37 @@ jobs:
         include:
           - artifact: linux-x86_64
             os: ubuntu-latest
-            args: --release --features python --out dist --target x86_64-unknown-linux-gnu --manylinux 2014
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2014"
           - artifact: linux-aarch64
             os: ubuntu-latest
-            args: --release --features python --out dist --target aarch64-unknown-linux-gnu --manylinux 2014
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2014"
           - artifact: macos-x86_64
             os: macos-13
-            args: --release --features python --out dist --target x86_64-apple-darwin
+            target: x86_64-apple-darwin
+            manylinux: auto
           - artifact: macos-aarch64
             os: macos-14
-            args: --release --features python --out dist --target aarch64-apple-darwin
+            target: aarch64-apple-darwin
+            manylinux: auto
           - artifact: windows-x86_64
             os: windows-latest
-            args: --release --features python --out dist --target x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
+            manylinux: auto
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: ${{ matrix.args }}
-      - uses: actions/upload-artifact@v4
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --features python --out dist
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.artifact }}
           path: dist/*.whl
@@ -55,11 +62,11 @@ jobs:
     needs: wheels
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.whl

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "kontract"
-version = "0.2.0"
+version = "0.2.1"
 description = "Une algèbre des contrats financiers, pricée par Monte-Carlo. Cœur Rust."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -25,4 +25,3 @@ features = ["python"]
 module-name = "kontract._kontract"
 python-source = "python"
 # Wheel abi3 unique (CPython ≥ 3.9) grâce à la feature `abi3-py39` de PyO3.
-
