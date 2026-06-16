@@ -62,6 +62,32 @@ print(res.price, "±", res.std_error)
 Auto-implémenté jalon par jalon par Claude Code. Faire avancer d'un jalon :
 commande `/loop` (ou `./.claude/skills/jalon.sh start`).
 
+## Installation Python sans Rust
+
+Pour utiliser `kontract` dans un autre projet Python sans installer de
+compilateur Rust, installe une wheel précompilée attachée à une GitHub Release :
+
+```bash
+uv add 'kontract @ https://github.com/LePhilippeDucTai/kontracts/releases/download/v0.2.0/kontract-0.2.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
+uv run python -c "import kontract; print(kontract.__version__)"
+```
+
+Choisis le fichier `.whl` qui correspond à ta plateforme dans les assets de la
+release GitHub :
+
+- Linux x86_64 : `manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
+- Linux ARM64 : `manylinux_2_17_aarch64.manylinux2014_aarch64.whl`
+- macOS Intel : `macosx_*_x86_64.whl`
+- macOS Apple Silicon : `macosx_*_arm64.whl`
+- Windows x64 : `win_amd64.whl`
+
+Installer directement depuis le dépôt Git reste possible, mais cette forme
+compile le module natif et nécessite Rust côté consommateur :
+
+```bash
+uv add 'kontract @ git+ssh://git@github.com/LePhilippeDucTai/kontracts.git'
+```
+
 ## Build local
 
 ```bash
