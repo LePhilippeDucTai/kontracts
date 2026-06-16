@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "kontract"
-version = "0.2.1"
+version = "0.2.2"
 description = "Une algèbre des contrats financiers, pricée par Monte-Carlo. Cœur Rust."
 readme = "README.md"
 requires-python = ">=3.9"
