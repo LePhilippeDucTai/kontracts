@@ -27,6 +27,7 @@ ruby-build.*.log
 target/
 Cargo.lock
 **/*.rs.bk
+.cargo-home/
 
 # Python
 __pycache__/
@@ -39,6 +40,7 @@ build/
 .pytest_cache/
 .venv/
 venv/
+.uv-cache/
 
 # IDE
 .vscode/

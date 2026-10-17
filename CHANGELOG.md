@@ -2,6 +2,35 @@
 
 Format : [Keep a Changelog](https://keepachangelog.com/), versionnage sémantique.
 
+## [0.2.3] — 2026-06-16
+
+### Changed
+- Wheels précompilées limitées à **Linux ARM64** et **Windows x64** (retrait de
+  Linux x64 et des deux cibles macOS de la matrice) ; `README` documente
+  l'installation directe depuis les assets de la GitHub Release.
+
+## [0.2.2] — 2026-06-16
+
+### Changed
+- Workflow `Release` : runners macOS migrés vers `macos-15` / `macos-15-intel`.
+
+## [0.2.1] — 2026-06-16
+
+### Added
+- **Catalogue d'exemples Python** (`examples/python/`, cf. `PLAN_EXEMPLES.md`) :
+  53 scripts + 16 READMEs couvrant 100 % de la surface d'API — DSL, dérivés
+  linéaires, vanilles, moteur MC (diagnostics, réduction de variance, Sobol),
+  Greeks, digitales/barrières, path-dependent (Asian/lookback), américaines,
+  modèles avancés, multi-actifs, taux, FX, calibration, produits structurés
+  et portefeuille batch — chacun validé par `assert` contre des références
+  analytiques ; job CI `examples` (smoke test exécutant chaque script).
+- **Workflow `Release`** : wheels précompilées attachées aux GitHub Releases
+  (installation sans toolchain Rust), en remplacement de la publication PyPI.
+
+### Fixed
+- Test performance batch (100 contrats < 500 ms) : assertion active
+  uniquement en `--release` (le temps en debug dépend de la machine).
+
 ## [0.2.0] — 2026-06-15
 
 Durcissement production (post-J25).
